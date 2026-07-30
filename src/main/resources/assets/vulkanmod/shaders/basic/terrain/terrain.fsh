@@ -13,9 +13,14 @@ layout(binding = 1) uniform UBO {
     float ShadowStrength;
     float ShadowDistance;
     int RtDirectLighting;
+    int RtViewMode;
     float SunLightStrength;
     float SkyLightStrength;
     float BlockLightStrength;
+    int TerrainLayer;
+    int WaterReflections;
+    float WaterReflectionStrength;
+    float WaterReflectionDistance;
     float FogStart;
     float FogEnd;
     float AlphaCutout;

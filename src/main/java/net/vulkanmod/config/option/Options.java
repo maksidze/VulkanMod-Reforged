@@ -405,6 +405,26 @@ public abstract class Options {
     }
 
     public static OptionBlock[] getRayTracingOpts() {
+        CyclingOption<Integer> viewMode = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.viewMode"),
+                new Integer[]{0, 1, 2},
+                value -> {
+                    config.rayTracingViewMode = sanitizeRtViewMode(value);
+                    if (minecraft.levelRenderer != null) {
+                        minecraft.levelRenderer.allChanged();
+                    }
+                },
+                () -> sanitizeRtViewMode(config.rayTracingViewMode)
+        );
+        viewMode
+                .setTranslator(value -> Component.translatable(switch (value) {
+                    case 1 -> "vulkanmod.options.rayTracing.viewMode.rtOnly";
+                    case 2 -> "vulkanmod.options.rayTracing.viewMode.minecraftOnly";
+                    default -> "vulkanmod.options.rayTracing.viewMode.composite";
+                }))
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.viewMode.tooltip"))
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
         CyclingOption<Integer> shadowRays = new CyclingOption<>(
                 Component.translatable("vulkanmod.options.rayTracing.shadowRays"),
                 new Integer[]{1, 2, 4, 8},
@@ -526,8 +546,47 @@ public abstract class Options {
             blockLight.updateActiveState();
         });
 
+        SwitchOption waterReflections = new SwitchOption(
+                Component.translatable("vulkanmod.options.rayTracing.waterReflections"),
+                value -> config.rayTracingWaterReflections = value,
+                () -> config.rayTracingWaterReflections
+        );
+        waterReflections
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.waterReflections.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
+        RangeOption waterReflectionStrength = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.waterReflectionStrength"),
+                0, 100, 5,
+                value -> Component.literal(value + "%"),
+                value -> config.rayTracingWaterReflectionStrength = Math.max(0, Math.min(100, value)),
+                () -> Math.max(0, Math.min(100, config.rayTracingWaterReflectionStrength))
+        );
+        waterReflectionStrength
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.waterReflectionStrength.tooltip"))
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && waterReflections.getNewValue());
+
+        RangeOption waterReflectionDistance = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.waterReflectionDistance"),
+                16, 256, 16,
+                value -> Component.literal(value + " blocks"),
+                value -> config.rayTracingWaterReflectionDistance = Math.max(16, Math.min(256, value)),
+                () -> Math.max(16, Math.min(256, config.rayTracingWaterReflectionDistance))
+        );
+        waterReflectionDistance
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.waterReflectionDistance.tooltip"))
+                .setImpact(PerformanceImpact.MEDIUM)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && waterReflections.getNewValue());
+
+        waterReflections.setOnChange(() -> {
+            waterReflectionStrength.updateActiveState();
+            waterReflectionDistance.updateActiveState();
+        });
+
         return new OptionBlock[]{
                 new OptionBlock("", new Option<?>[]{
+                        viewMode,
                         shadowRays,
                         shadowSoftness,
                         shadowDarkness,
@@ -535,7 +594,10 @@ public abstract class Options {
                         directLighting,
                         sunLight,
                         skyLight,
-                        blockLight
+                        blockLight,
+                        waterReflections,
+                        waterReflectionStrength,
+                        waterReflectionDistance
                 })
         };
     }
@@ -545,6 +607,10 @@ public abstract class Options {
         if (value <= 2) return 2;
         if (value <= 4) return 4;
         return 8;
+    }
+
+    private static int sanitizeRtViewMode(int value) {
+        return Math.max(0, Math.min(2, value));
     }
 
     public static OptionBlock[] getOtherOpts() {

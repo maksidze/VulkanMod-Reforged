@@ -41,6 +41,9 @@ public class Uniforms {
             return 8;
         });
         vec1i_uniformMap.put("RtDirectLighting", () -> Initializer.CONFIG.rayTracingDirectLighting ? 1 : 0);
+        vec1i_uniformMap.put("RtViewMode", () -> Math.max(0, Math.min(2, Initializer.CONFIG.rayTracingViewMode)));
+        vec1i_uniformMap.put("TerrainLayer", () -> VRenderSystem.terrainLayer);
+        vec1i_uniformMap.put("WaterReflections", () -> Initializer.CONFIG.rayTracingWaterReflections ? 1 : 0);
 
         vec1f_uniformMap.put("FogStart", RenderSystem::getShaderFogStart);
         vec1f_uniformMap.put("FogEnd", RenderSystem::getShaderFogEnd);
@@ -70,6 +73,14 @@ public class Uniforms {
         vec1f_uniformMap.put("BlockLightStrength", () -> Math.max(
                 0.0F,
                 Math.min(2.0F, Initializer.CONFIG.rayTracingBlockLight / 100.0F)
+        ));
+        vec1f_uniformMap.put("WaterReflectionStrength", () -> Math.max(
+                0.0F,
+                Math.min(1.0F, Initializer.CONFIG.rayTracingWaterReflectionStrength / 100.0F)
+        ));
+        vec1f_uniformMap.put("WaterReflectionDistance", () -> (float) Math.max(
+                16,
+                Math.min(256, Initializer.CONFIG.rayTracingWaterReflectionDistance)
         ));
 
         vec2f_uniformMap.put("ScreenSize", VRenderSystem::getScreenSize);

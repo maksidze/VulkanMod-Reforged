@@ -23,6 +23,8 @@ layout (location = 3) out vec3 worldPosition;
 layout (location = 4) out vec4 rtVertexColor;
 layout (location = 5) out vec2 lightLevels;
 layout (location = 6) out vec3 worldNormal;
+layout (location = 7) out vec3 cameraIncident;
+layout (location = 8) out float waterMaterial;
 
 //Compressed Vertex
 layout (location = 0) in ivec4 Position;
@@ -50,6 +52,8 @@ void main() {
         bitfieldExtract(uint(Position.a), 12, 4)
     ) * (1.0 / 15.0);
     worldNormal = Normal.xyz;
+    cameraIncident = worldPosition - CameraPosition;
+    waterMaterial = Normal.w;
 }
 
 ////Default Vertex

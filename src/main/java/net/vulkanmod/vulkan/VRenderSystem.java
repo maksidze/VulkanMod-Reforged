@@ -79,6 +79,7 @@ public abstract class VRenderSystem {
     public static MappedBuffer screenSize = new MappedBuffer(2 * 4);
 
     public static float alphaCutout = 0.0f;
+    public static int terrainLayer = 0;
 
     private static final float[] depthBias = new float[2];
 

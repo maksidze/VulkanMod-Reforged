@@ -4,6 +4,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.level.BlockAndTintGetter;
@@ -39,6 +40,7 @@ public class LiquidRenderer {
     BuilderResources resources;
 
     private final int[] quadColors = new int[4];
+    private boolean reflectiveWater;
 
     public void setResources(BuilderResources resources) {
         this.resources = resources;
@@ -86,6 +88,7 @@ public class LiquidRenderer {
 
     public void tessellate(BlockState blockState, FluidState fluidState, BlockPos blockPos, TerrainBufferBuilder vertexConsumer) {
         BlockAndTintGetter region = this.resources.region;
+        this.reflectiveWater = fluidState.is(FluidTags.WATER);
 
         IClientFluidTypeExtensions extensions = IClientFluidTypeExtensions.of(fluidState);
         int color = extensions.getTintColor(fluidState, region, blockPos);
@@ -421,17 +424,33 @@ public class LiquidRenderer {
         }
     }
 
-    private int calculateNormal(ModelQuad quad) {
-
-        Vector3f normal = new Vector3f(quad.getX(1), quad.getY(1), quad.getZ(1))
-                .cross(quad.getX(3), quad.getY(3), quad.getZ(3));
+    private int calculateNormal(ModelQuad quad, boolean flip) {
+        Vector3f edge1 = new Vector3f(
+                quad.getX(1) - quad.getX(0),
+                quad.getY(1) - quad.getY(0),
+                quad.getZ(1) - quad.getZ(0)
+        );
+        Vector3f edge2 = new Vector3f(
+                quad.getX(3) - quad.getX(0),
+                quad.getY(3) - quad.getY(0),
+                quad.getZ(3) - quad.getZ(0)
+        );
+        Vector3f normal = edge1.cross(edge2);
         normal.normalize();
+        if (flip) {
+            normal.negate();
+        }
 
-        return VertexUtil.packNormal(normal.x(), normal.y(), normal.z());
+        int packedNormal = VertexUtil.packNormal(normal.x(), normal.y(), normal.z());
+        if (reflectiveWater) {
+            packedNormal |= 0x7F000000;
+        }
+        return packedNormal;
     }
 
     private void putQuad(ModelQuad quad, TerrainBufferBuilder bufferBuilder, float xOffset, float yOffset, float zOffset, boolean flip) {
         QuadLightData quadLightData = resources.quadLightData;
+        int packedNormal = calculateNormal(quad, flip);
 
         int k = QuadUtils.getIterationStartIdx(quadLightData.br);
 
@@ -445,7 +464,13 @@ public class LiquidRenderer {
             final float y = yOffset + quad.getY(i);
             final float z = zOffset + quad.getZ(i);
 
-            bufferBuilder.vertex(x, y, z, this.quadColors[i], quad.getU(i), quad.getV(i), quadLightData.lm[i], 0);
+            bufferBuilder.vertex(
+                    x, y, z,
+                    this.quadColors[i],
+                    quad.getU(i), quad.getV(i),
+                    quadLightData.lm[i],
+                    packedNormal
+            );
 
             k += (flip ? -1 : +1);
             k &= 0b11;

@@ -35,6 +35,7 @@ public enum TerrainRenderType {
 
     public void setCutoutUniform() {
         VRenderSystem.alphaCutout = this.alphaCutout;
+        VRenderSystem.terrainLayer = this.ordinal();
     }
 
     public static TerrainRenderType get(RenderType renderType) {

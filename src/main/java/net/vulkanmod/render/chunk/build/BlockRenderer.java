@@ -115,7 +115,8 @@ public class BlockRenderer {
             BakedQuad bakedQuad = quads.get(i);
             QuadView quadView = (QuadView) bakedQuad;
             boolean useVanillaDirectionalShade = !RayTracingManager.shouldEnableRayQueryPass()
-                    || !net.vulkanmod.Initializer.CONFIG.rayTracingDirectLighting;
+                    || !net.vulkanmod.Initializer.CONFIG.rayTracingDirectLighting
+                    || net.vulkanmod.Initializer.CONFIG.rayTracingViewMode == 2;
             lightPipeline.calculate(
                     quadView,
                     blockPos,

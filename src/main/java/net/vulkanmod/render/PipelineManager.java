@@ -39,9 +39,15 @@ public abstract class PipelineManager {
 
     public static void setDefaultShader() {
         setShaderGetter(renderType -> {
+            if (Initializer.CONFIG.rayTracingViewMode == 2) {
+                return terrainShader;
+            }
             boolean tracedLayer = renderType == TerrainRenderType.SOLID
                     || renderType == TerrainRenderType.CUTOUT_MIPPED
-                    || renderType == TerrainRenderType.CUTOUT;
+                    || renderType == TerrainRenderType.CUTOUT
+                    || (renderType == TerrainRenderType.TRANSLUCENT
+                        && (Initializer.CONFIG.rayTracingWaterReflections
+                            || Initializer.CONFIG.rayTracingViewMode == 1));
             if (tracedLayer && terrainShaderRt != null && RayTracingManager.getTopLevelHandle() != 0) {
                 if (!loggedRayQueryPipeline) {
                     loggedRayQueryPipeline = true;
