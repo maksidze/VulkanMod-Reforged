@@ -4,7 +4,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.level.BlockAndTintGetter;
@@ -40,7 +39,6 @@ public class LiquidRenderer {
     BuilderResources resources;
 
     private final int[] quadColors = new int[4];
-    private boolean reflectiveWater;
 
     public void setResources(BuilderResources resources) {
         this.resources = resources;
@@ -88,7 +86,6 @@ public class LiquidRenderer {
 
     public void tessellate(BlockState blockState, FluidState fluidState, BlockPos blockPos, TerrainBufferBuilder vertexConsumer) {
         BlockAndTintGetter region = this.resources.region;
-        this.reflectiveWater = fluidState.is(FluidTags.WATER);
 
         IClientFluidTypeExtensions extensions = IClientFluidTypeExtensions.of(fluidState);
         int color = extensions.getTintColor(fluidState, region, blockPos);
@@ -441,11 +438,7 @@ public class LiquidRenderer {
             normal.negate();
         }
 
-        int packedNormal = VertexUtil.packNormal(normal.x(), normal.y(), normal.z());
-        if (reflectiveWater) {
-            packedNormal |= 0x7F000000;
-        }
-        return packedNormal;
+        return VertexUtil.packNormal(normal.x(), normal.y(), normal.z());
     }
 
     private void putQuad(ModelQuad quad, TerrainBufferBuilder bufferBuilder, float xOffset, float yOffset, float zOffset, boolean flip) {

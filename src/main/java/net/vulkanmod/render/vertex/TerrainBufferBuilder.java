@@ -2,9 +2,11 @@ package net.vulkanmod.render.vertex;
 
 import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
 import net.vulkanmod.Initializer;
 import net.vulkanmod.render.PipelineManager;
 import net.vulkanmod.render.util.SortUtil;
+import net.vulkanmod.vulkan.raytracing.RtMaterial;
 import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector3f;
@@ -32,6 +34,7 @@ public class TerrainBufferBuilder {
 
     private boolean needsSorting;
     private boolean indexOnly;
+    private int packedRtMaterial;
 
     protected VertexBuilder vertexBuilder;
 
@@ -204,11 +207,17 @@ public class TerrainBufferBuilder {
 
     public void vertex(float x, float y, float z, int color, float u, float v, int light, int packedNormal) {
         final long ptr = this.bufferPtr + this.nextElementByte;
+        packedNormal = (packedNormal & 0x00FFFFFF) | (this.packedRtMaterial << 24);
         this.vertexBuilder.vertex(ptr, x, y, z, color, u, v, light, packedNormal);
         this.endVertex();
     }
 
     public void setBlockAttributes(BlockState blockState) {
+        this.packedRtMaterial = RtMaterial.encodeBlock(blockState);
+    }
+
+    public void setFluidAttributes(BlockState blockState, FluidState fluidState) {
+        this.packedRtMaterial = RtMaterial.encodeFluid(blockState, fluidState);
     }
 
     public long getPtr() {

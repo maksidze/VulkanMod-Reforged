@@ -24,7 +24,7 @@ layout (location = 4) out vec4 rtVertexColor;
 layout (location = 5) out vec2 lightLevels;
 layout (location = 6) out vec3 worldNormal;
 layout (location = 7) out vec3 cameraIncident;
-layout (location = 8) out float waterMaterial;
+layout (location = 8) out float rtMaterialAttribute;
 
 //Compressed Vertex
 layout (location = 0) in ivec4 Position;
@@ -53,7 +53,8 @@ void main() {
     ) * (1.0 / 15.0);
     worldNormal = Normal.xyz;
     cameraIncident = worldPosition - CameraPosition;
-    waterMaterial = Normal.w;
+    // The normalized high byte carries a compact 7-bit RT material/emission attribute.
+    rtMaterialAttribute = round(max(Normal.w, 0.0) * 127.0);
 }
 
 ////Default Vertex

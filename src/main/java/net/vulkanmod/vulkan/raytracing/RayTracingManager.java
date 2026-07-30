@@ -39,8 +39,8 @@ public final class RayTracingManager {
     private static final int COMPRESSED_TERRAIN_STRIDE = 20;
     private static final float POSITION_SCALE = 1.0f / 2048.0f;
     private static final float POSITION_OFFSET = 4.0f;
-    private static final int UV_ENTRY_BYTES = Integer.BYTES;
-    private static final int MAX_UV_ENTRIES = 1 << 24;
+    private static final int HIT_ATTRIBUTE_ENTRY_BYTES = Integer.BYTES;
+    private static final int HIT_ATTRIBUTE_STRIDE = 5;
     private static final int DEFAULT_UV_BUFFER_MIB = 64;
 
     private static RayTracingManager INSTANCE;
@@ -76,7 +76,7 @@ public final class RayTracingManager {
                     MemoryTypes.HOST_MEM
             );
             Initializer.LOGGER.info(
-                    "RT acceleration-structure builder initialized with {} MiB UV storage",
+                    "RT acceleration-structure builder initialized with {} MiB hit-attribute storage",
                     uvBufferBytes / (1024 * 1024)
             );
         }
@@ -444,7 +444,7 @@ public final class RayTracingManager {
                 this.uvBuffer.upload(geometryData.uvData, uvAllocationOffset);
                 result.uvAllocationOffset = uvAllocationOffset;
                 result.uvAllocationSize = geometryData.uvData.remaining();
-                result.uvBaseEntry = uvAllocationOffset / UV_ENTRY_BYTES;
+                result.uvBaseEntry = uvAllocationOffset / HIT_ATTRIBUTE_ENTRY_BYTES;
             } catch (Throwable throwable) {
                 freeUvRange(uvAllocationOffset, geometryData.uvData.remaining());
                 result.destroy();
@@ -664,7 +664,7 @@ public final class RayTracingManager {
     }
 
     private int allocateUvRange(int requestedBytes) {
-        int size = (requestedBytes + UV_ENTRY_BYTES - 1) & -UV_ENTRY_BYTES;
+        int size = (requestedBytes + HIT_ATTRIBUTE_ENTRY_BYTES - 1) & -HIT_ATTRIBUTE_ENTRY_BYTES;
         for (var iterator = this.freeUvRanges.entrySet().iterator(); iterator.hasNext(); ) {
             Map.Entry<Integer, Integer> freeRange = iterator.next();
             if (freeRange.getValue() < size) {
@@ -682,7 +682,7 @@ public final class RayTracingManager {
 
         if (this.uvBuffer == null || this.uvHighWaterMark > this.uvBuffer.getBufferSize() - size) {
             throw new IllegalStateException(
-                    "RT UV storage exhausted: requested=" + size
+                    "RT hit-attribute storage exhausted: requested=" + size
                             + " used=" + this.uvHighWaterMark
                             + " capacity=" + (this.uvBuffer == null ? 0 : this.uvBuffer.getBufferSize())
             );
@@ -921,8 +921,12 @@ public final class RayTracingManager {
                     hash ^= source.get(positionOffset + componentByte) & 0xFFL;
                     hash *= 0x100000001b3L;
                 }
-                for (int uvByte = 12; uvByte < 16; uvByte++) {
-                    hash ^= source.get(positionOffset + uvByte) & 0xFFL;
+                for (int attributeByte = 6; attributeByte < 8; attributeByte++) {
+                    hash ^= source.get(positionOffset + attributeByte) & 0xFFL;
+                    hash *= 0x100000001b3L;
+                }
+                for (int attributeByte = 12; attributeByte < 20; attributeByte++) {
+                    hash ^= source.get(positionOffset + attributeByte) & 0xFFL;
                     hash *= 0x100000001b3L;
                 }
             }
@@ -968,7 +972,10 @@ public final class RayTracingManager {
         ByteBuffer indices = MemoryUtil.memAlloc(Math.multiplyExact(primitiveCount * 3, Integer.BYTES))
                 .order(ByteOrder.nativeOrder());
         ByteBuffer uvData = MemoryUtil.memAlloc(
-                Math.addExact(Integer.BYTES, Math.multiplyExact(primitiveCount * 3, Integer.BYTES))
+                Math.addExact(
+                        Integer.BYTES,
+                        Math.multiplyExact(primitiveCount * HIT_ATTRIBUTE_STRIDE, Integer.BYTES)
+                )
         ).order(ByteOrder.nativeOrder());
         uvData.putInt(opaqueVertexCount / 2);
 
@@ -997,8 +1004,21 @@ public final class RayTracingManager {
                 int uv1 = packedUv(source, sourceStart + (vertex + 1) * stride);
                 int uv2 = packedUv(source, sourceStart + (vertex + 2) * stride);
                 int uv3 = packedUv(source, sourceStart + (vertex + 3) * stride);
-                uvData.putInt(uv0).putInt(uv1).putInt(uv2);
-                uvData.putInt(uv0).putInt(uv2).putInt(uv3);
+                int vertex0Offset = sourceStart + vertex * stride;
+                int vertex1Offset = sourceStart + (vertex + 1) * stride;
+                int vertex2Offset = sourceStart + (vertex + 2) * stride;
+                int vertex3Offset = sourceStart + (vertex + 3) * stride;
+                int packedNormalMaterial = source.getInt(vertex0Offset + 16);
+                int light0 = packedHitLight(source, vertex0Offset);
+                int light1 = packedHitLight(source, vertex1Offset);
+                int light2 = packedHitLight(source, vertex2Offset);
+                int light3 = packedHitLight(source, vertex3Offset);
+                uvData.putInt(uv0).putInt(uv1).putInt(uv2)
+                        .putInt(packedNormalMaterial)
+                        .putInt(packTriangleLights(light0, light1, light2));
+                uvData.putInt(uv0).putInt(uv2).putInt(uv3)
+                        .putInt(packedNormalMaterial)
+                        .putInt(packTriangleLights(light0, light2, light3));
             }
             vertexBase += layerVertexCount;
         }
@@ -1023,6 +1043,17 @@ public final class RayTracingManager {
         return u | (v << 16);
     }
 
+    private static int packedHitLight(ByteBuffer source, int vertexOffset) {
+        int packedLight = Short.toUnsignedInt(source.getShort(vertexOffset + 6));
+        int blockLight = (packedLight >>> 4) & 0xF;
+        int skyLight = (packedLight >>> 12) & 0xF;
+        return blockLight | (skyLight << 4);
+    }
+
+    private static int packTriangleLights(int light0, int light1, int light2) {
+        return light0 | (light1 << 8) | (light2 << 16);
+    }
+
     private static boolean isSinglePlaneDebugEnabled() {
         return Boolean.parseBoolean(System.getProperty("vulkanmod.rayTracing.debugPlane", "false"));
     }
@@ -1037,8 +1068,14 @@ public final class RayTracingManager {
         ByteBuffer indices = MemoryUtil.memAlloc(Integer.BYTES).order(ByteOrder.nativeOrder());
         indices.putInt(0);
         indices.flip();
-        ByteBuffer uvData = MemoryUtil.memAlloc(Integer.BYTES).order(ByteOrder.nativeOrder());
-        uvData.putInt(1).flip();
+        ByteBuffer uvData = MemoryUtil.memAlloc(
+                Integer.BYTES + HIT_ATTRIBUTE_STRIDE * Integer.BYTES
+        ).order(ByteOrder.nativeOrder());
+        uvData.putInt(1);
+        uvData.putInt(0).putInt(0).putInt(0);
+        uvData.putInt(0x00007F00);
+        uvData.putInt(0x00FFFFFF);
+        uvData.flip();
         return new PendingGeometry(vertices, indices, uvData, 3, 1, 1, geometrySignature);
     }
 

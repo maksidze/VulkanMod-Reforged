@@ -134,7 +134,7 @@ public class BuildTask extends ChunkTask {
                         renderType = TerrainRenderType.get(ItemBlockRenderTypes.getRenderLayer(fluidState));
 
                         bufferBuilder = getBufferBuilder(bufferBuilders, renderType);
-                        bufferBuilder.setBlockAttributes(blockState);
+                        bufferBuilder.setFluidAttributes(blockState, fluidState);
 
                         liquidRenderer.renderLiquid(blockState, fluidState, blockPos, bufferBuilder);
                     }

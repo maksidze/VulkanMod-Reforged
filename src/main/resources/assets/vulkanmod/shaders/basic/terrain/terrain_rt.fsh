@@ -41,7 +41,7 @@ layout(location = 4) in vec4 rtVertexColor;
 layout(location = 5) in vec2 lightLevels;
 layout(location = 6) in vec3 worldNormal;
 layout(location = 7) in vec3 cameraIncident;
-layout(location = 8) in float waterMaterial;
+layout(location = 8) in float rtMaterialAttribute;
 
 layout(location = 0) out vec4 fragColor;
 
@@ -56,8 +56,80 @@ const vec2 RT_SHADOW_DISK[8] = vec2[](
     vec2( 0.60, -0.60)
 );
 
+const uint RT_HIT_ATTRIBUTE_STRIDE = 5u;
+const int RT_MATERIAL_OPAQUE = 0;
+const int RT_MATERIAL_WATER = 1;
+const int RT_MATERIAL_LEAVES = 2;
+const int RT_MATERIAL_LAVA = 3;
+const int RT_MATERIAL_FIRE = 4;
+
+uint rtHitBase(uint instanceBase, uint primitiveIndex) {
+    return instanceBase + 1u + primitiveIndex * RT_HIT_ATTRIBUTE_STRIDE;
+}
+
 vec2 unpackRtUv(uint packedUv) {
     return vec2(packedUv & 0xFFFFu, packedUv >> 16) * (1.0 / 32768.0);
+}
+
+float unpackRtSnorm8(uint value) {
+    int signedValue = int(value & 0xFFu);
+    if (signedValue > 127) {
+        signedValue -= 256;
+    }
+    return clamp(float(signedValue) * (1.0 / 127.0), -1.0, 1.0);
+}
+
+vec3 unpackRtNormal(uint packedNormalMaterial) {
+    vec3 normal = vec3(
+        unpackRtSnorm8(packedNormalMaterial),
+        unpackRtSnorm8(packedNormalMaterial >> 8u),
+        unpackRtSnorm8(packedNormalMaterial >> 16u)
+    );
+    float lengthSquared = dot(normal, normal);
+    return lengthSquared > 1.0e-6
+        ? normal * inversesqrt(lengthSquared)
+        : vec3(0.0, 1.0, 0.0);
+}
+
+int unpackRtMaterial(uint packedNormalMaterial) {
+    return int((packedNormalMaterial >> 24u) & 0x7u);
+}
+
+float unpackRtEmission(uint packedNormalMaterial) {
+    return float((packedNormalMaterial >> 27u) & 0xFu) * (1.0 / 15.0);
+}
+
+vec2 unpackRtLight(uint packedLightByte) {
+    return vec2(packedLightByte & 0xFu, (packedLightByte >> 4u) & 0xFu) * (1.0 / 15.0);
+}
+
+vec2 interpolateRtLight(uint packedLights, vec2 barycentrics) {
+    vec2 light0 = unpackRtLight(packedLights);
+    vec2 light1 = unpackRtLight(packedLights >> 8u);
+    vec2 light2 = unpackRtLight(packedLights >> 16u);
+    return light0 * (1.0 - barycentrics.x - barycentrics.y)
+        + light1 * barycentrics.x
+        + light2 * barycentrics.y;
+}
+
+vec3 rtSkyColor(float daylight) {
+    return mix(vec3(0.04, 0.055, 0.09), vec3(0.26, 0.32, 0.42), daylight);
+}
+
+vec3 rtSunColor(float sunHeight) {
+    return mix(
+        vec3(1.0, 0.55, 0.28),
+        vec3(1.0, 0.96, 0.88),
+        smoothstep(0.04, 0.40, sunHeight)
+    );
+}
+
+vec3 rtBlockColor() {
+    return vec3(1.0, 0.52, 0.22);
+}
+
+float rtEmissionBoost(int material) {
+    return material == RT_MATERIAL_LAVA || material == RT_MATERIAL_FIRE ? 1.8 : 1.35;
 }
 
 bool traceOcclusion(vec3 origin, vec3 direction) {
@@ -85,7 +157,7 @@ bool traceOcclusion(vec3 origin, vec3 direction) {
         bool acceptsIntersection = primitiveIndex < opaquePrimitiveCount;
 
         if (!acceptsIntersection) {
-            uint triangleUvBase = uvBase + 1u + primitiveIndex * 3u;
+            uint triangleUvBase = rtHitBase(uvBase, primitiveIndex);
             vec2 uv0 = unpackRtUv(PackedRtUvs[triangleUvBase]);
             vec2 uv1 = unpackRtUv(PackedRtUvs[triangleUvBase + 1u]);
             vec2 uv2 = unpackRtUv(PackedRtUvs[triangleUvBase + 2u]);
@@ -115,6 +187,8 @@ vec3 reflectionSky(vec3 direction) {
     return sky + vec3(1.0, 0.82, 0.58) * sunDisk * 3.0;
 }
 
+vec3 offsetRayOrigin(vec3 position, vec3 normal);
+
 vec3 traceReflection(vec3 origin, vec3 direction) {
     rayQueryEXT query;
     rayQueryInitializeEXT(
@@ -140,7 +214,7 @@ vec3 traceReflection(vec3 origin, vec3 direction) {
         bool acceptsIntersection = primitiveIndex < opaquePrimitiveCount;
 
         if (!acceptsIntersection) {
-            uint triangleUvBase = uvBase + 1u + primitiveIndex * 3u;
+            uint triangleUvBase = rtHitBase(uvBase, primitiveIndex);
             vec2 uv0 = unpackRtUv(PackedRtUvs[triangleUvBase]);
             vec2 uv1 = unpackRtUv(PackedRtUvs[triangleUvBase + 1u]);
             vec2 uv2 = unpackRtUv(PackedRtUvs[triangleUvBase + 2u]);
@@ -163,7 +237,8 @@ vec3 traceReflection(vec3 origin, vec3 direction) {
 
     uint primitiveIndex = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
     uint uvBase = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
-    uint triangleUvBase = uvBase + 1u + primitiveIndex * 3u;
+    bool hitCutout = primitiveIndex >= PackedRtUvs[uvBase];
+    uint triangleUvBase = rtHitBase(uvBase, primitiveIndex);
     vec2 uv0 = unpackRtUv(PackedRtUvs[triangleUvBase]);
     vec2 uv1 = unpackRtUv(PackedRtUvs[triangleUvBase + 1u]);
     vec2 uv2 = unpackRtUv(PackedRtUvs[triangleUvBase + 2u]);
@@ -172,19 +247,50 @@ vec3 traceReflection(vec3 origin, vec3 direction) {
         + uv1 * barycentrics.x
         + uv2 * barycentrics.y;
     vec3 hitColor = textureLod(Sampler0, hitUv, 0.0).rgb;
-    float reflectionDaylight = smoothstep(-0.02, 0.16, SunDirection.y);
-    vec3 reflectionExposure = mix(
-        vec3(0.045, 0.055, 0.085),
-        vec3(0.62, 0.70, 0.82),
-        reflectionDaylight
-    );
+    uint packedNormalMaterial = PackedRtUvs[triangleUvBase + 3u];
+    uint packedLights = PackedRtUvs[triangleUvBase + 4u];
+    vec2 hitLightLevels = interpolateRtLight(packedLights, barycentrics);
+    vec3 hitNormal = unpackRtNormal(packedNormalMaterial);
+    if (dot(hitNormal, -direction) < 0.0) {
+        hitNormal = -hitNormal;
+    }
+    int hitMaterial = unpackRtMaterial(packedNormalMaterial);
+    float hitEmission = unpackRtEmission(packedNormalMaterial);
     float hitDistance = rayQueryGetIntersectionTEXT(query, true);
+    vec3 hitPosition = origin + direction * hitDistance;
+    vec3 sunDirection = normalize(SunDirection);
+    float daylight = smoothstep(-0.02, 0.08, sunDirection.y);
+    float surfaceToLight = hitCutout || hitMaterial == RT_MATERIAL_LEAVES
+        ? abs(dot(hitNormal, sunDirection))
+        : max(dot(hitNormal, sunDirection), 0.0);
+    bool hitShadowed = false;
+    if (daylight * surfaceToLight > 0.01) {
+        vec3 shadowNormal = dot(hitNormal, sunDirection) < 0.0 ? -hitNormal : hitNormal;
+        vec3 shadowOrigin = offsetRayOrigin(
+            hitPosition + shadowNormal * 0.04 + sunDirection * 0.01,
+            shadowNormal
+        );
+        hitShadowed = traceOcclusion(shadowOrigin, sunDirection);
+    }
+
+    float skyLevel = clamp(hitLightLevels.y, 0.0, 1.0);
+    float blockLevel = pow(clamp(hitLightLevels.x, 0.0, 1.0), 1.35);
+    vec3 directSun = rtSunColor(clamp(sunDirection.y, 0.0, 1.0))
+        * (0.82 * daylight * surfaceToLight * (hitShadowed ? 0.0 : 1.0) * SunLightStrength);
+    vec3 hitLighting = RtViewMode == 1
+        ? vec3(0.002) + directSun
+        : vec3(0.015)
+            + rtSkyColor(daylight) * skyLevel * SkyLightStrength
+            + directSun
+            + rtBlockColor() * (0.90 * blockLevel * BlockLightStrength);
+    vec3 reflectedSurface = hitColor * hitLighting
+        + hitColor * hitEmission * rtEmissionBoost(hitMaterial);
     float distanceFade = smoothstep(
         WaterReflectionDistance * 0.70,
         WaterReflectionDistance,
         hitDistance
     );
-    return mix(hitColor * reflectionExposure, reflectionSky(direction), distanceFade);
+    return mix(reflectedSurface, reflectionSky(direction), distanceFade);
 }
 
 float traceSunOcclusion(vec3 origin, vec3 sunDirection, float softness) {
@@ -245,11 +351,13 @@ void main() {
 
     bool translucentLayer = TerrainLayer == 3;
     bool rtOnly = RtViewMode == 1;
-    bool reflectiveWater = translucentLayer && waterMaterial > 0.5 && WaterReflections != 0;
-    if (translucentLayer && !reflectiveWater) {
-        if (rtOnly) {
-            discard;
-        }
+    int primaryAttribute = int(round(clamp(rtMaterialAttribute, 0.0, 127.0)));
+    int primaryMaterial = primaryAttribute & 0x7;
+    float primaryEmission = float((primaryAttribute >> 3) & 0xF) * (1.0 / 15.0);
+    bool reflectiveWater = translucentLayer
+        && primaryMaterial == RT_MATERIAL_WATER
+        && WaterReflections != 0;
+    if (translucentLayer && !reflectiveWater && !rtOnly) {
         fragColor = linear_fog(color, vertexDistance, FogStart, FogEnd, FogColor);
         return;
     }
@@ -286,8 +394,13 @@ void main() {
         derivativeNormal = -derivativeNormal;
     }
     bool rtLighting = RtDirectLighting != 0 || rtOnly;
+    bool twoSidedSurface = TerrainLayer == 1
+        || TerrainLayer == 2
+        || primaryMaterial == RT_MATERIAL_LEAVES;
     float surfaceToLight = rtLighting
-        ? max(dot(geometricNormal, sunDirection), 0.0)
+        ? (twoSidedSurface
+            ? abs(dot(geometricNormal, sunDirection))
+            : max(dot(geometricNormal, sunDirection), 0.0))
         : abs(dot(derivativeNormal, sunDirection));
     float shadowWeight = daylight * smoothstep(0.08, 0.20, surfaceToLight);
     vec3 originNormal = rtLighting ? geometricNormal : derivativeNormal;
@@ -306,27 +419,18 @@ void main() {
         float sunHeight = clamp(sunDirection.y, 0.0, 1.0);
         float skyLevel = clamp(lightLevels.y, 0.0, 1.0);
         float blockLevel = pow(clamp(lightLevels.x, 0.0, 1.0), 1.35);
-        vec3 skyColor = mix(
-            vec3(0.04, 0.055, 0.09),
-            vec3(0.26, 0.32, 0.42),
-            daylight
-        );
-        vec3 sunColor = mix(
-            vec3(1.0, 0.55, 0.28),
-            vec3(1.0, 0.96, 0.88),
-            smoothstep(0.04, 0.40, sunHeight)
-        );
-        vec3 blockColor = vec3(1.0, 0.52, 0.22);
-        vec3 directSun = sunColor
+        vec3 directSun = rtSunColor(sunHeight)
             * (0.82 * daylight * surfaceToLight * visibility * SunLightStrength);
         vec3 lighting = rtOnly
             ? vec3(0.002) + directSun
             : vec3(0.015)
-                + skyColor * skyLevel * SkyLightStrength
+                + rtSkyColor(daylight) * skyLevel * SkyLightStrength
                 + directSun
-                + blockColor * (0.90 * blockLevel * BlockLightStrength);
+                + rtBlockColor() * (0.90 * blockLevel * BlockLightStrength);
         vec3 materialTint = rtOnly ? vec3(1.0) : rtVertexColor.rgb;
-        color = vec4(texel.rgb * materialTint * lighting, texel.a * rtVertexColor.a);
+        vec3 baseColor = texel.rgb * materialTint;
+        vec3 emittedLight = baseColor * primaryEmission * rtEmissionBoost(primaryMaterial);
+        color = vec4(baseColor * lighting + emittedLight, texel.a * rtVertexColor.a);
     } else {
         color.rgb *= visibility;
     }
