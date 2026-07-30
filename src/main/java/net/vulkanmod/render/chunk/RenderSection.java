@@ -17,6 +17,7 @@ import net.vulkanmod.render.chunk.build.task.SortTransparencyTask;
 import net.vulkanmod.render.chunk.graph.GraphDirections;
 import net.vulkanmod.render.chunk.util.Util;
 import net.vulkanmod.render.vertex.TerrainRenderType;
+import net.vulkanmod.vulkan.raytracing.RayTracingManager;
 
 import java.util.Collection;
 import java.util.Map;
@@ -380,6 +381,7 @@ public class RenderSection {
     }
 
     private void reset() {
+        RayTracingManager.removeSection(this);
         this.clearGlobalBlockEntities();
         this.cancelTasks();
         this.compileStatus.compiledSection = CompiledSection.UNCOMPILED;

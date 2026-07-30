@@ -41,6 +41,7 @@ import net.vulkanmod.vulkan.memory.IndexBuffer;
 import net.vulkanmod.vulkan.memory.IndirectBuffer;
 import net.vulkanmod.vulkan.memory.MemoryTypes;
 import net.vulkanmod.vulkan.shader.GraphicsPipeline;
+import net.vulkanmod.vulkan.raytracing.RayTracingManager;
 import net.vulkanmod.vulkan.texture.VTextureSelector;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
@@ -216,6 +217,8 @@ public class WorldRenderer {
     public void allChanged() {
         if (this.level != null) {
 
+            RayTracingManager.clearSections();
+
             this.level.clearTintCaches();
 
             this.renderRegionCache.clear();
@@ -259,6 +262,7 @@ public class WorldRenderer {
         if (level != null) {
             this.allChanged();
         } else {
+            RayTracingManager.clearSections();
             if (this.sectionGrid != null) {
                 this.sectionGrid.releaseAllBuffers();
                 this.sectionGrid = null;

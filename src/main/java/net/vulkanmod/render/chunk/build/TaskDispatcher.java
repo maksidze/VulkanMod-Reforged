@@ -2,6 +2,7 @@ package net.vulkanmod.render.chunk.build;
 
 import com.google.common.collect.Queues;
 import net.vulkanmod.Initializer;
+import net.vulkanmod.render.PipelineManager;
 import net.vulkanmod.render.chunk.ChunkArea;
 import net.vulkanmod.render.chunk.RenderSection;
 import net.vulkanmod.render.chunk.buffer.DrawBuffers;
@@ -11,14 +12,23 @@ import net.vulkanmod.render.chunk.build.thread.ThreadBuilderPack;
 import net.vulkanmod.render.chunk.build.thread.BuilderResources;
 import net.vulkanmod.render.optimization.AdaptiveChunkUploadBudget;
 import net.vulkanmod.render.vertex.TerrainRenderType;
+import net.vulkanmod.vulkan.raytracing.RayTracingManager;
 
 import org.jetbrains.annotations.Nullable;
 
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.locks.LockSupport;
 
 public class TaskDispatcher {
     private static final int MAX_PENDING_COMPILE_RESULTS = 128;
+    private static final TerrainRenderType[] RT_TERRAIN_LAYERS = {
+            TerrainRenderType.SOLID,
+            TerrainRenderType.CUTOUT_MIPPED
+    };
+    private static boolean loggedFirstFullChunkUpdate;
     private final Queue<CompileResult> compileResults = Queues.newLinkedBlockingDeque();
     public final ThreadBuilderPack fixedBuffers;
 
@@ -212,6 +222,24 @@ public class TaskDispatcher {
 
         if(compileResult.fullUpdate) {
             var renderLayers = compileResult.renderedLayers;
+            if (!loggedFirstFullChunkUpdate && !renderLayers.isEmpty()) {
+                loggedFirstFullChunkUpdate = true;
+                Initializer.LOGGER.info("RT observed first non-empty chunk update: layers={}", renderLayers.keySet());
+            }
+
+            List<ByteBuffer> rayTracingLayers = new ArrayList<>(RT_TERRAIN_LAYERS.length);
+            for (TerrainRenderType renderType : RT_TERRAIN_LAYERS) {
+                UploadBuffer uploadBuffer = renderLayers.get(renderType);
+                if (uploadBuffer != null && !uploadBuffer.indexOnly && uploadBuffer.getVertexBuffer() != null) {
+                    rayTracingLayers.add(uploadBuffer.getVertexBuffer());
+                }
+            }
+            RayTracingManager.queueTerrainSection(
+                    section,
+                    rayTracingLayers,
+                    PipelineManager.TERRAIN_VERTEX_FORMAT.getVertexSize()
+            );
+
             for(TerrainRenderType renderType : TerrainRenderType.VALUES) {
                 UploadBuffer uploadBuffer = renderLayers.get(renderType);
 

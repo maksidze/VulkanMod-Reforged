@@ -15,6 +15,7 @@ import net.vulkanmod.vulkan.device.DeviceManager;
 import net.vulkanmod.vulkan.framebuffer.Framebuffer;
 import net.vulkanmod.vulkan.framebuffer.RenderPass;
 import net.vulkanmod.vulkan.memory.MemoryManager;
+import net.vulkanmod.vulkan.raytracing.RayTracingManager;
 import net.vulkanmod.vulkan.pass.DefaultMainPass;
 import net.vulkanmod.vulkan.pass.MainPass;
 import net.vulkanmod.vulkan.shader.GraphicsPipeline;
@@ -135,6 +136,7 @@ public class Renderer {
         Uniforms.setupDefaultUniforms();
         PipelineManager.init();
         UploadManager.createInstance();
+        RayTracingManager.createInstance();
 
         allocateCommandBuffers();
         createSyncObjects();
@@ -427,6 +429,7 @@ public class Renderer {
 
         WorldRenderer.getInstance().uploadSections();
         UploadManager.INSTANCE.submitUploads();
+        RayTracingManager.processPendingBuilds();
     }
 
     public void addUsedPipeline(Pipeline pipeline) {
@@ -504,6 +507,8 @@ public class Renderer {
 
     public void cleanUpResources() {
         destroySyncObjects();
+
+        RayTracingManager.destroyInstance();
 
         drawer.cleanUpResources();
 
