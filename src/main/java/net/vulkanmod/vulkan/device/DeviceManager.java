@@ -11,7 +11,9 @@ import org.lwjgl.vulkan.*;
 
 import java.nio.IntBuffer;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import static java.util.stream.Collectors.toSet;
 import static net.vulkanmod.vulkan.queue.Queue.findQueueFamilies;
@@ -32,6 +34,7 @@ public abstract class DeviceManager {
     public static VkDevice vkDevice;
 
     public static Device device;
+    private static boolean rayTracingEnabled;
 
     public static VkPhysicalDeviceProperties deviceProperties;
     public static VkPhysicalDeviceMemoryProperties memoryProperties;
@@ -116,13 +119,15 @@ public abstract class DeviceManager {
             surfaceProperties = querySurfaceProperties(physicalDevice, stack);
 
             Initializer.LOGGER.info(
-                    "Selected Vulkan device: {} ({}) driver {} Vulkan {} indirectDrawSupported={} fastIndirectDraw={}",
+                    "Selected Vulkan device: {} ({}) driver {} Vulkan {} indirectDrawSupported={} fastIndirectDraw={} rayTracing={} rayQuery={}",
                     device.deviceName,
                     device.vendorIdString,
                     device.driverVersion,
                     device.vkVersion,
                     device.isDrawIndirectSupported(),
-                    supportsFastIndirectDraw()
+                    supportsFastIndirectDraw(),
+                    device.rayTracingCapabilities().isPipelineSupported(),
+                    device.rayTracingCapabilities().isRayQuerySupported()
             );
         }
     }
@@ -134,34 +139,32 @@ public abstract class DeviceManager {
     static Device autoPickDevice() {
         ArrayList<Device> integratedGPUs = new ArrayList<>();
         ArrayList<Device> otherDevices = new ArrayList<>();
-
-        boolean flag = false;
-
-        Device currentDevice = null;
+        Device discreteGpu = null;
         for (Device device : suitableDevices) {
-            currentDevice = device;
-
             int deviceType = device.properties.deviceType();
             if (deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-                flag = true;
-                break;
+                if (Vulkan.RAY_TRACING_REQUESTED && device.rayTracingCapabilities().isPipelineSupported()) {
+                    return device;
+                }
+                if (discreteGpu == null) {
+                    discreteGpu = device;
+                }
             } else if (deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
                 integratedGPUs.add(device);
             else
                 otherDevices.add(device);
         }
 
-        if (!flag) {
-            if (!integratedGPUs.isEmpty())
-                currentDevice = integratedGPUs.get(0);
-            else if (!otherDevices.isEmpty())
-                currentDevice = otherDevices.get(0);
-            else {
-                throw new IllegalStateException("Failed to find a suitable GPU");
-            }
+        if (discreteGpu != null) {
+            return discreteGpu;
         }
-
-        return currentDevice;
+        if (!integratedGPUs.isEmpty()) {
+            return integratedGPUs.get(0);
+        }
+        if (!otherDevices.isEmpty()) {
+            return otherDevices.get(0);
+        }
+        throw new IllegalStateException("Failed to find a suitable GPU");
     }
 
     public static void createLogicalDevice() {
@@ -201,18 +204,30 @@ public abstract class DeviceManager {
             createInfo.sType(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
             createInfo.pQueueCreateInfos(queueCreateInfos);
             createInfo.pEnabledFeatures(deviceFeatures.features());
-            createInfo.pNext(deviceVulkan11Features);
+
+            rayTracingEnabled = Vulkan.RAY_TRACING_REQUESTED
+                    && device.rayTracingCapabilities().isPipelineSupported();
+
+            long optionalFeatureChain = VK_NULL_HANDLE;
 
             if (Vulkan.DYNAMIC_RENDERING) {
                 VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeaturesKHR = VkPhysicalDeviceDynamicRenderingFeaturesKHR.calloc(stack);
                 dynamicRenderingFeaturesKHR.sType$Default();
                 dynamicRenderingFeaturesKHR.dynamicRendering(true);
-
-                deviceVulkan11Features.pNext(dynamicRenderingFeaturesKHR.address());
-
+                dynamicRenderingFeaturesKHR.pNext(optionalFeatureChain);
+                optionalFeatureChain = dynamicRenderingFeaturesKHR.address();
             }
 
-            createInfo.ppEnabledExtensionNames(asPointerBuffer(Vulkan.REQUIRED_EXTENSION));
+            Set<String> enabledExtensions = new LinkedHashSet<>(Vulkan.REQUIRED_EXTENSION);
+            if (rayTracingEnabled) {
+                optionalFeatureChain = device.rayTracingCapabilities()
+                        .createEnabledFeatureChain(stack, optionalFeatureChain);
+                enabledExtensions.addAll(device.rayTracingCapabilities().getEnabledExtensions());
+            }
+            deviceVulkan11Features.pNext(optionalFeatureChain);
+            createInfo.pNext(deviceVulkan11Features);
+
+            createInfo.ppEnabledExtensionNames(asPointerBuffer(enabledExtensions));
 
             createInfo.ppEnabledLayerNames(Vulkan.ENABLE_VALIDATION_LAYERS ? asPointerBuffer(Vulkan.VALIDATION_LAYERS) : null);
 
@@ -222,6 +237,17 @@ public abstract class DeviceManager {
             Vulkan.checkResult(res, "Failed to create logical device");
 
             vkDevice = new VkDevice(pDevice.get(0), physicalDevice, createInfo, VK_API_VERSION_1_2);
+
+            if (rayTracingEnabled) {
+                Initializer.LOGGER.info(
+                        "Hardware ray tracing enabled: maxRecursionDepth={} shaderGroupHandleSize={} maxGeometryCount={}",
+                        device.rayTracingCapabilities().maxRayRecursionDepth(),
+                        device.rayTracingCapabilities().shaderGroupHandleSize(),
+                        device.rayTracingCapabilities().maxGeometryCount()
+                );
+            } else if (Vulkan.RAY_TRACING_REQUESTED) {
+                Initializer.LOGGER.warn("Hardware ray tracing is unavailable on the selected Vulkan device; using raster fallback");
+            }
 
             graphicsQueue = new GraphicsQueue(stack, indices.graphicsFamily);
             transferQueue = new TransferQueue(stack, indices.transferFamily);
@@ -367,6 +393,14 @@ public abstract class DeviceManager {
 
     public static ComputeQueue getComputeQueue() {
         return computeQueue;
+    }
+
+    public static boolean isRayTracingEnabled() {
+        return rayTracingEnabled;
+    }
+
+    public static RayTracingCapabilities getRayTracingCapabilities() {
+        return device == null ? null : device.rayTracingCapabilities();
     }
 
     public static SurfaceProperties querySurfaceProperties(VkPhysicalDevice device, MemoryStack stack) {

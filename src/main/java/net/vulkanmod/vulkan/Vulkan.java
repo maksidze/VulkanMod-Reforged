@@ -44,6 +44,11 @@ public class Vulkan {
 
     public static final boolean DYNAMIC_RENDERING = false;
 
+    /** Enables Vulkan hardware ray tracing when the selected physical device supports it. */
+    public static final boolean RAY_TRACING_REQUESTED = Boolean.parseBoolean(
+            System.getProperty("vulkanmod.rayTracing", "true")
+    );
+
     public static final Set<String> VALIDATION_LAYERS;
 
     static {

@@ -30,6 +30,8 @@ public class Device {
 
     public final VkPhysicalDeviceFeatures2 availableFeatures;
     public final VkPhysicalDeviceVulkan11Features availableFeatures11;
+    private final Set<String> availableExtensions;
+    private final RayTracingCapabilities rayTracingCapabilities;
 
     private boolean drawIndirectSupported;
 
@@ -48,11 +50,15 @@ public class Device {
         this.availableFeatures = VkPhysicalDeviceFeatures2.calloc();
         this.availableFeatures.sType$Default();
 
-        this.availableFeatures11 = VkPhysicalDeviceVulkan11Features.malloc();
+        this.availableFeatures11 = VkPhysicalDeviceVulkan11Features.calloc();
         this.availableFeatures11.sType$Default();
         this.availableFeatures.pNext(this.availableFeatures11);
 
+        this.availableExtensions = queryAvailableExtensions();
+        this.rayTracingCapabilities = new RayTracingCapabilities(this.availableExtensions, this.availableFeatures11);
+
         vkGetPhysicalDeviceFeatures2(this.physicalDevice, this.availableFeatures);
+        this.rayTracingCapabilities.finishQuery(this.physicalDevice);
 
         if (this.availableFeatures.features().multiDrawIndirect() && this.availableFeatures11.shaderDrawParameters())
             this.drawIndirectSupported = true;
@@ -102,30 +108,30 @@ public class Device {
     }
 
     public Set<String> getUnsupportedExtensions(Set<String> requiredExtensions) {
+        Set<String> unsupportedExtensions = new HashSet<>(requiredExtensions);
+        unsupportedExtensions.removeAll(this.availableExtensions);
+        return unsupportedExtensions;
+    }
+
+    private Set<String> queryAvailableExtensions() {
         try (MemoryStack stack = stackPush()) {
-
             IntBuffer extensionCount = stack.ints(0);
+            vkEnumerateDeviceExtensionProperties(this.physicalDevice, (String) null, extensionCount, null);
 
-            vkEnumerateDeviceExtensionProperties(physicalDevice, (String) null, extensionCount, null);
-
-            VkExtensionProperties.Buffer availableExtensions = VkExtensionProperties.malloc(extensionCount.get(0),
-                    stack);
-
-            vkEnumerateDeviceExtensionProperties(physicalDevice, (String) null, extensionCount, availableExtensions);
-
-            Set<String> extensions = availableExtensions.stream()
+            VkExtensionProperties.Buffer extensions = VkExtensionProperties.malloc(extensionCount.get(0), stack);
+            vkEnumerateDeviceExtensionProperties(this.physicalDevice, (String) null, extensionCount, extensions);
+            return extensions.stream()
                     .map(VkExtensionProperties::extensionNameString)
                     .collect(toSet());
-
-            Set<String> unsupportedExtensions = new HashSet<>(requiredExtensions);
-            unsupportedExtensions.removeAll(extensions);
-
-            return unsupportedExtensions;
         }
     }
 
     public boolean isDrawIndirectSupported() {
         return drawIndirectSupported;
+    }
+
+    public RayTracingCapabilities rayTracingCapabilities() {
+        return this.rayTracingCapabilities;
     }
 
     public boolean isAMD() {
@@ -141,6 +147,7 @@ public class Device {
     }
 
     public void free() {
+        this.rayTracingCapabilities.free();
         this.properties.free();
         this.availableFeatures11.free();
         this.availableFeatures.free();
