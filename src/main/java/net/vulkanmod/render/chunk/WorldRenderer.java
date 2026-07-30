@@ -296,8 +296,9 @@ public class WorldRenderer {
         final boolean isTranslucent = terrainRenderType == TerrainRenderType.TRANSLUCENT;
         final boolean indirectDraw = Initializer.CONFIG.indirectDraw && DeviceManager.supportsFastIndirectDraw();
 
-        VRenderSystem.applyMVP(modelView, projection);
-        VRenderSystem.setPrimitiveTopologyGL(GL11.GL_TRIANGLES);
+          VRenderSystem.applyMVP(modelView, projection);
+          VRenderSystem.setCameraPosition((float) camX, (float) camY, (float) camZ);
+          VRenderSystem.setPrimitiveTopologyGL(GL11.GL_TRIANGLES);
 
         Renderer renderer = Renderer.getInstance();
         GraphicsPipeline pipeline = PipelineManager.getTerrainShader(terrainRenderType);
@@ -309,7 +310,16 @@ public class WorldRenderer {
         Renderer.getDrawer().bindIndexBuffer(Renderer.getCommandBuffer(), indexBuffer);
 
         int currentFrame = Renderer.getCurrentFrame();
-        Set<TerrainRenderType> allowedRenderTypes = Initializer.CONFIG.uniqueOpaqueLayer ? TerrainRenderType.COMPACT_RENDER_TYPES : TerrainRenderType.SEMI_COMPACT_RENDER_TYPES;
+        Set<TerrainRenderType> allowedRenderTypes = RayTracingManager.shouldEnableRayQueryPass()
+                ? EnumSet.of(
+                        TerrainRenderType.SOLID,
+                        TerrainRenderType.CUTOUT_MIPPED,
+                        TerrainRenderType.CUTOUT,
+                        TerrainRenderType.TRANSLUCENT
+                )
+                : Initializer.CONFIG.uniqueOpaqueLayer
+                        ? TerrainRenderType.COMPACT_RENDER_TYPES
+                        : TerrainRenderType.SEMI_COMPACT_RENDER_TYPES;
         if (allowedRenderTypes.contains(terrainRenderType)) {
             terrainRenderType.setCutoutUniform();
 
@@ -338,6 +348,7 @@ public class WorldRenderer {
 
         if (!indirectDraw) {
             VRenderSystem.setChunkOffset(0, 0, 0);
+            VRenderSystem.setWorldOrigin(0, 0, 0);
             renderer.pushConstants(pipeline);
         }
 

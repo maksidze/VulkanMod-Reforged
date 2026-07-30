@@ -66,6 +66,9 @@ public abstract class VRenderSystem {
     private static final Matrix4f scratchMVP = new Matrix4f();
 
     public static MappedBuffer ChunkOffset = new MappedBuffer(3 * 4);
+    public static MappedBuffer WorldOrigin = new MappedBuffer(3 * 4);
+    public static MappedBuffer CameraPosition = new MappedBuffer(3 * 4);
+    public static MappedBuffer SunDirection = new MappedBuffer(3 * 4);
     public static MappedBuffer lightDirection0 = new MappedBuffer(3 * 4);
     public static MappedBuffer lightDirection1 = new MappedBuffer(3 * 4);
 
@@ -161,6 +164,27 @@ public abstract class VRenderSystem {
         VUtil.UNSAFE.putFloat(ptr, f1);
         VUtil.UNSAFE.putFloat(ptr + 4, f2);
         VUtil.UNSAFE.putFloat(ptr + 8, f3);
+    }
+
+    public static void setWorldOrigin(float x, float y, float z) {
+        long ptr = WorldOrigin.ptr;
+        VUtil.UNSAFE.putFloat(ptr, x);
+        VUtil.UNSAFE.putFloat(ptr + 4, y);
+        VUtil.UNSAFE.putFloat(ptr + 8, z);
+    }
+
+    public static void setCameraPosition(float x, float y, float z) {
+        long ptr = CameraPosition.ptr;
+        VUtil.UNSAFE.putFloat(ptr, x);
+        VUtil.UNSAFE.putFloat(ptr + 4, y);
+        VUtil.UNSAFE.putFloat(ptr + 8, z);
+    }
+
+    public static void setSunDirection(float x, float y, float z) {
+        long ptr = SunDirection.ptr;
+        VUtil.UNSAFE.putFloat(ptr, x);
+        VUtil.UNSAFE.putFloat(ptr + 4, y);
+        VUtil.UNSAFE.putFloat(ptr + 8, z);
     }
 
     public static void setShaderColor(float f1, float f2, float f3, float f4) {

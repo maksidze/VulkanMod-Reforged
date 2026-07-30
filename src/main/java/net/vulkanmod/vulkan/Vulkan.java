@@ -41,7 +41,9 @@ import static org.lwjgl.vulkan.VK12.VK_API_VERSION_1_2;
 
 public class Vulkan {
 
-    public static final boolean ENABLE_VALIDATION_LAYERS = false;
+    public static final boolean ENABLE_VALIDATION_LAYERS = Boolean.parseBoolean(
+            System.getProperty("vulkanmod.validation", "false")
+    );
 
     public static final boolean DYNAMIC_RENDERING = false;
 
@@ -125,6 +127,7 @@ public class Vulkan {
 
     private static VkInstance instance;
     private static long debugMessenger;
+    private static VkDebugUtilsMessengerCallbackEXT debugMessengerCallback;
     private static long surface;
 
     private static SwapChain swapChain;
@@ -208,6 +211,10 @@ public class Vulkan {
 
         DeviceManager.destroy();
         destroyDebugUtilsMessengerEXT(instance, debugMessenger, null);
+        if (debugMessengerCallback != null) {
+            debugMessengerCallback.free();
+            debugMessengerCallback = null;
+        }
         KHRSurface.vkDestroySurfaceKHR(instance, surface, null);
         vkDestroyInstance(instance, null);
     }
@@ -242,10 +249,6 @@ public class Vulkan {
             if (ENABLE_VALIDATION_LAYERS) {
 
                 createInfo.ppEnabledLayerNames(asPointerBuffer(VALIDATION_LAYERS));
-
-                VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = VkDebugUtilsMessengerCreateInfoEXT.calloc(stack);
-                populateDebugMessengerCreateInfo(debugCreateInfo);
-                createInfo.pNext(debugCreateInfo.address());
             }
 
             PointerBuffer instancePtr = stack.mallocPointer(1);
@@ -278,12 +281,16 @@ public class Vulkan {
     }
 
     private static void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo) {
+        if (debugMessengerCallback == null) {
+            debugMessengerCallback = VkDebugUtilsMessengerCallbackEXT.create(Vulkan::debugCallback);
+        }
+
         debugCreateInfo.sType(VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT);
 
         debugCreateInfo.messageSeverity(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
         debugCreateInfo.messageType(VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT);
 
-        debugCreateInfo.pfnUserCallback(Vulkan::debugCallback);
+        debugCreateInfo.pfnUserCallback(debugMessengerCallback);
     }
 
     private static void setupDebugMessenger() {

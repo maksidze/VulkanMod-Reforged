@@ -12,6 +12,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.StringTokenizer;
 import java.util.regex.Pattern;
 
@@ -105,7 +107,19 @@ public class SPIRVUtils {
 
         recordCompileForProfiler(elapsed);
 
-        return new SPIRV(result, shaderc_result_get_bytes(result));
+        ByteBuffer bytecode = shaderc_result_get_bytes(result);
+        if (filename.endsWith("terrain_rt.fsh")) {
+            try {
+                ByteBuffer copy = bytecode.duplicate();
+                byte[] bytes = new byte[copy.remaining()];
+                copy.get(bytes);
+                Files.write(Path.of("terrain_rt.spv"), bytes);
+            } catch (IOException exception) {
+                throw new RuntimeException("Failed to dump terrain RT SPIR-V", exception);
+            }
+        }
+
+        return new SPIRV(result, bytecode);
     }
 
     private static void recordCompileForProfiler(long elapsed) {

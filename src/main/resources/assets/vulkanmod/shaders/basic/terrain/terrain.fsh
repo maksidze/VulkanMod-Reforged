@@ -7,6 +7,15 @@ layout(binding = 2) uniform sampler2D Sampler0;
 
 layout(binding = 1) uniform UBO {
     vec4 FogColor;
+    vec3 SunDirection;
+    float ShadowSoftness;
+    int ShadowRays;
+    float ShadowStrength;
+    float ShadowDistance;
+    int RtDirectLighting;
+    float SunLightStrength;
+    float SkyLightStrength;
+    float BlockLightStrength;
     float FogStart;
     float FogEnd;
     float AlphaCutout;

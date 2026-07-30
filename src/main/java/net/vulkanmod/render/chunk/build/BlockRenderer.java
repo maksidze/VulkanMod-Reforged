@@ -26,6 +26,7 @@ import net.vulkanmod.render.chunk.build.thread.BuilderResources;
 import net.vulkanmod.render.model.quad.QuadUtils;
 import net.vulkanmod.render.model.quad.QuadView;
 import net.vulkanmod.render.vertex.TerrainBufferBuilder;
+import net.vulkanmod.vulkan.raytracing.RayTracingManager;
 import net.vulkanmod.render.vertex.VertexUtil;
 import net.vulkanmod.vulkan.util.ColorUtil;
 import org.joml.Vector3f;
@@ -113,7 +114,16 @@ public class BlockRenderer {
         for (int i = 0; i < quads.size(); ++i) {
             BakedQuad bakedQuad = quads.get(i);
             QuadView quadView = (QuadView) bakedQuad;
-            lightPipeline.calculate(quadView, blockPos, quadLightData, cullFace, bakedQuad.getDirection(), bakedQuad.isShade());
+            boolean useVanillaDirectionalShade = !RayTracingManager.shouldEnableRayQueryPass()
+                    || !net.vulkanmod.Initializer.CONFIG.rayTracingDirectLighting;
+            lightPipeline.calculate(
+                    quadView,
+                    blockPos,
+                    quadLightData,
+                    cullFace,
+                    bakedQuad.getDirection(),
+                    bakedQuad.isShade() && useVanillaDirectionalShade
+            );
             putQuadData(bufferBuilder, quadView, quadLightData);
         }
     }
@@ -179,7 +189,8 @@ public class BlockRenderer {
         BlockGetter blockGetter = resources.region;
         BlockState adjBlockState = blockGetter.getBlockState(adjPos);
 
-        if (net.vulkanmod.Initializer.CONFIG.leavesCulling) {
+        if (net.vulkanmod.Initializer.CONFIG.leavesCulling
+                && !RayTracingManager.shouldEnableRayQueryPass()) {
             if (blockState.getBlock() instanceof LeavesBlock && adjBlockState.getBlock() instanceof LeavesBlock) {
                 return false;
             }

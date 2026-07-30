@@ -26,6 +26,7 @@ import net.vulkanmod.render.chunk.build.thread.BuilderResources;
 import net.vulkanmod.render.chunk.build.thread.ThreadBuilderPack;
 import net.vulkanmod.render.vertex.TerrainBufferBuilder;
 import net.vulkanmod.render.vertex.TerrainRenderType;
+import net.vulkanmod.vulkan.raytracing.RayTracingManager;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector3f;
 
@@ -209,6 +210,18 @@ public class BuildTask extends ChunkTask {
     }
 
     private TerrainRenderType compactRenderTypes(TerrainRenderType renderType) {
+        if (RayTracingManager.shouldEnableRayQueryPass()) {
+            // The acceleration structure currently treats every triangle as opaque.
+            // Preserve material layers so cutout geometry is not folded into SOLID
+            // and cannot become a solid leaf/grass occluder in the RT scene.
+            return switch (renderType) {
+                case SOLID -> TerrainRenderType.SOLID;
+                case CUTOUT_MIPPED -> TerrainRenderType.CUTOUT_MIPPED;
+                case CUTOUT -> TerrainRenderType.CUTOUT;
+                case TRANSLUCENT, TRIPWIRE -> TerrainRenderType.TRANSLUCENT;
+            };
+        }
+
         if (Initializer.CONFIG.uniqueOpaqueLayer) {
             renderType = switch (renderType) {
                 case SOLID, CUTOUT, CUTOUT_MIPPED -> TerrainRenderType.CUTOUT_MIPPED;

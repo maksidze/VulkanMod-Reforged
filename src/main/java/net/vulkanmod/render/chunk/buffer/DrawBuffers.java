@@ -110,11 +110,14 @@ public class DrawBuffers {
         float yOffset = (float) ((this.origin.y) + POS_OFFSET - camY);
         float zOffset = (float) ((this.origin.z) + POS_OFFSET - camZ);
 
-        ByteBuffer byteBuffer = stack.malloc(12);
+        ByteBuffer byteBuffer = stack.calloc(28);
 
         byteBuffer.putFloat(0, xOffset);
         byteBuffer.putFloat(4, yOffset);
         byteBuffer.putFloat(8, zOffset);
+        byteBuffer.putFloat(16, this.origin.x);
+        byteBuffer.putFloat(20, this.origin.y);
+        byteBuffer.putFloat(24, this.origin.z);
 
         vkCmdPushConstants(commandBuffer, pipeline.getLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, byteBuffer);
     }

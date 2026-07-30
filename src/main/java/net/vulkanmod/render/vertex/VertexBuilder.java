@@ -57,6 +57,8 @@ public interface VertexBuilder {
 
             MemoryUtil.memPutShort(ptr + 12, (short) (u * UV_CONV_MUL));
             MemoryUtil.memPutShort(ptr + 14, (short) (v * UV_CONV_MUL));
+
+            MemoryUtil.memPutInt(ptr + 16, packedNormal);
         }
 
         @Override

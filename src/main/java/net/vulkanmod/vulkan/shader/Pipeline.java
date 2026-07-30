@@ -5,12 +5,14 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.util.GsonHelper;
+import net.vulkanmod.Initializer;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.Vulkan;
 import net.vulkanmod.vulkan.device.DeviceManager;
 import net.vulkanmod.vulkan.framebuffer.RenderPass;
 import net.vulkanmod.vulkan.memory.MemoryManager;
 import net.vulkanmod.vulkan.memory.UniformBuffer;
+import net.vulkanmod.vulkan.raytracing.RayTracingManager;
 import net.vulkanmod.vulkan.shader.SPIRVUtils.SPIRV;
 import net.vulkanmod.vulkan.shader.SPIRVUtils.ShaderKind;
 import net.vulkanmod.vulkan.shader.descriptor.ImageDescriptor;
@@ -41,6 +43,7 @@ import static net.vulkanmod.vulkan.shader.SPIRVUtils.compileShader;
 import static net.vulkanmod.vulkan.shader.SPIRVUtils.compileShaderAbsoluteFile;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.VK10.*;
+import static org.lwjgl.vulkan.KHRAccelerationStructure.*;
 
 public abstract class Pipeline {
 
@@ -133,6 +136,10 @@ public abstract class Pipeline {
     protected List<UBO> buffers;
     protected ManualUBO manualUBO;
     protected List<ImageDescriptor> imageDescriptors;
+    protected int accelerationStructureBinding = -1;
+    protected int accelerationStructureStages;
+    protected int storageBufferBinding = -1;
+    protected int storageBufferStages;
     protected PushConstants pushConstants;
 
     public List<UBO> getBuffers() {
@@ -145,7 +152,9 @@ public abstract class Pipeline {
 
     protected void createDescriptorSetLayout() {
         try (MemoryStack stack = stackPush()) {
-            int bindingsSize = this.buffers.size() + imageDescriptors.size();
+            int bindingsSize = this.buffers.size() + imageDescriptors.size()
+                    + (this.accelerationStructureBinding >= 0 ? 1 : 0)
+                    + (this.storageBufferBinding >= 0 ? 1 : 0);
 
             VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(bindingsSize, stack);
 
@@ -165,6 +174,24 @@ public abstract class Pipeline {
                 samplerLayoutBinding.descriptorType(imageDescriptor.getType());
                 samplerLayoutBinding.pImmutableSamplers(null);
                 samplerLayoutBinding.stageFlags(imageDescriptor.getStages());
+            }
+
+            if (this.accelerationStructureBinding >= 0) {
+                VkDescriptorSetLayoutBinding accelerationBinding = bindings.get(this.accelerationStructureBinding);
+                accelerationBinding.binding(this.accelerationStructureBinding);
+                accelerationBinding.descriptorCount(1);
+                accelerationBinding.descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
+                accelerationBinding.pImmutableSamplers(null);
+                accelerationBinding.stageFlags(this.accelerationStructureStages);
+            }
+
+            if (this.storageBufferBinding >= 0) {
+                VkDescriptorSetLayoutBinding storageBinding = bindings.get(this.storageBufferBinding);
+                storageBinding.binding(this.storageBufferBinding);
+                storageBinding.descriptorCount(1);
+                storageBinding.descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                storageBinding.pImmutableSamplers(null);
+                storageBinding.stageFlags(this.storageBufferStages);
             }
 
             VkDescriptorSetLayoutCreateInfo layoutInfo = VkDescriptorSetLayoutCreateInfo.calloc(stack);
@@ -279,6 +306,7 @@ public abstract class Pipeline {
     }
 
     protected static class DescriptorSets {
+        private static boolean loggedAccelerationDescriptor;
         private final Pipeline pipeline;
         private int poolSize = 10;
         private long descriptorPool;
@@ -288,7 +316,9 @@ public abstract class Pipeline {
 
         private final long[] boundUBs;
         private final ImageDescriptor.State[] boundTextures;
-        private final IntBuffer dynamicOffsets;
+          private final IntBuffer dynamicOffsets;
+          private long boundAccelerationStructure;
+          private long boundStorageBuffer;
 
         DescriptorSets(Pipeline pipeline) {
             this.pipeline = pipeline;
@@ -354,7 +384,7 @@ public abstract class Pipeline {
                 }
             }
 
-            for (int j = 0; j < pipeline.buffers.size(); ++j) {
+              for (int j = 0; j < pipeline.buffers.size(); ++j) {
                 UBO ubo = pipeline.buffers.get(j);
                 UniformBuffer uniformBufferI = ubo.getUniformBuffer();
 
@@ -364,9 +394,19 @@ public abstract class Pipeline {
                 if (this.boundUBs[j] != uniformBufferI.getId()) {
                     return true;
                 }
-            }
+              }
 
-            return false;
+              if (pipeline.accelerationStructureBinding >= 0
+                      && this.boundAccelerationStructure != RayTracingManager.getTopLevelHandle()) {
+                  return true;
+              }
+
+              if (pipeline.storageBufferBinding >= 0
+                      && this.boundStorageBuffer != RayTracingManager.getUvBufferHandle()) {
+                  return true;
+              }
+
+              return false;
         }
 
         private void checkPoolSize(MemoryStack stack) {
@@ -391,7 +431,10 @@ public abstract class Pipeline {
 
             this.currentSet = this.sets.get(this.currentIdx);
 
-            VkWriteDescriptorSet.Buffer descriptorWrites = VkWriteDescriptorSet.calloc(pipeline.buffers.size() + pipeline.imageDescriptors.size(), stack);
+            int descriptorWriteCount = pipeline.buffers.size() + pipeline.imageDescriptors.size()
+                    + (pipeline.accelerationStructureBinding >= 0 ? 1 : 0)
+                    + (pipeline.storageBufferBinding >= 0 ? 1 : 0);
+            VkWriteDescriptorSet.Buffer descriptorWrites = VkWriteDescriptorSet.calloc(descriptorWriteCount, stack);
             VkDescriptorBufferInfo.Buffer[] bufferInfos = new VkDescriptorBufferInfo.Buffer[pipeline.buffers.size()];
 
             int i = 0;
@@ -419,7 +462,7 @@ public abstract class Pipeline {
 
             VkDescriptorImageInfo.Buffer[] imageInfo = new VkDescriptorImageInfo.Buffer[pipeline.imageDescriptors.size()];
 
-            for (int j = 0; j < pipeline.imageDescriptors.size(); ++j) {
+              for (int j = 0; j < pipeline.imageDescriptors.size(); ++j) {
                 ImageDescriptor imageDescriptor = pipeline.imageDescriptors.get(j);
                 VulkanImage image = imageDescriptor.getImage();
                 long view = imageDescriptor.getImageView(image);
@@ -446,10 +489,67 @@ public abstract class Pipeline {
                 samplerDescriptorWrite.dstSet(currentSet);
 
                 this.boundTextures[j].set(view, sampler);
-                ++i;
-            }
+                  ++i;
+              }
 
-            vkUpdateDescriptorSets(DEVICE, descriptorWrites, null);
+              if (pipeline.accelerationStructureBinding >= 0) {
+                  long topLevelHandle = RayTracingManager.getTopLevelHandle();
+                  if (topLevelHandle == VK_NULL_HANDLE) {
+                      throw new IllegalStateException("RT terrain pipeline bound without a valid TLAS");
+                  }
+
+                  VkWriteDescriptorSetAccelerationStructureKHR accelerationInfo =
+                          VkWriteDescriptorSetAccelerationStructureKHR.calloc(stack);
+                  accelerationInfo.sType$Default();
+                  accelerationInfo.pAccelerationStructures(stack.longs(topLevelHandle));
+
+                  VkWriteDescriptorSet accelerationWrite = descriptorWrites.get(i);
+                  accelerationWrite.sType$Default();
+                  accelerationWrite.pNext(accelerationInfo.address());
+                  accelerationWrite.dstBinding(pipeline.accelerationStructureBinding);
+                  accelerationWrite.dstArrayElement(0);
+                  accelerationWrite.descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
+                  accelerationWrite.descriptorCount(1);
+                  accelerationWrite.dstSet(currentSet);
+
+                  this.boundAccelerationStructure = topLevelHandle;
+                  if (!loggedAccelerationDescriptor) {
+                      loggedAccelerationDescriptor = true;
+                      Initializer.LOGGER.info(
+                              "RT descriptor sample: set={} binding={} TLAS handle={} TLAS address={}",
+                              currentSet,
+                              pipeline.accelerationStructureBinding,
+                              topLevelHandle,
+                              RayTracingManager.getTopLevelDeviceAddress()
+                      );
+                  }
+                  ++i;
+              }
+
+              if (pipeline.storageBufferBinding >= 0) {
+                  long uvBufferHandle = RayTracingManager.getUvBufferHandle();
+                  if (uvBufferHandle == VK_NULL_HANDLE) {
+                      throw new IllegalStateException("RT terrain pipeline bound without a UV storage buffer");
+                  }
+
+                  VkDescriptorBufferInfo.Buffer storageInfo = VkDescriptorBufferInfo.calloc(1, stack);
+                  storageInfo.buffer(uvBufferHandle);
+                  storageInfo.offset(0L);
+                  storageInfo.range(RayTracingManager.getUvBufferSize());
+
+                  VkWriteDescriptorSet storageWrite = descriptorWrites.get(i);
+                  storageWrite.sType$Default();
+                  storageWrite.dstBinding(pipeline.storageBufferBinding);
+                  storageWrite.dstArrayElement(0);
+                  storageWrite.descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                  storageWrite.descriptorCount(1);
+                  storageWrite.pBufferInfo(storageInfo);
+                  storageWrite.dstSet(currentSet);
+
+                  this.boundStorageBuffer = uvBufferHandle;
+              }
+
+              vkUpdateDescriptorSets(DEVICE, descriptorWrites, null);
         }
 
         private void createDescriptorSets(MemoryStack stack) {
@@ -473,7 +573,9 @@ public abstract class Pipeline {
         }
 
         private void createDescriptorPool(MemoryStack stack) {
-            int size = pipeline.buffers.size() + pipeline.imageDescriptors.size();
+            int size = pipeline.buffers.size() + pipeline.imageDescriptors.size()
+                    + (pipeline.accelerationStructureBinding >= 0 ? 1 : 0)
+                    + (pipeline.storageBufferBinding >= 0 ? 1 : 0);
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(size, stack);
 
@@ -489,6 +591,19 @@ public abstract class Pipeline {
                 VkDescriptorPoolSize textureSamplerPoolSize = poolSizes.get(i);
                 textureSamplerPoolSize.type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
                 textureSamplerPoolSize.descriptorCount(this.poolSize);
+            }
+
+            if (pipeline.accelerationStructureBinding >= 0) {
+                VkDescriptorPoolSize accelerationPoolSize = poolSizes.get(i);
+                accelerationPoolSize.type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
+                accelerationPoolSize.descriptorCount(this.poolSize);
+                ++i;
+            }
+
+            if (pipeline.storageBufferBinding >= 0) {
+                VkDescriptorPoolSize storagePoolSize = poolSizes.get(i);
+                storagePoolSize.type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                storagePoolSize.descriptorCount(this.poolSize);
             }
 
             VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack);
@@ -540,7 +655,11 @@ public abstract class Pipeline {
         ManualUBO manualUBO;
         PushConstants pushConstants;
         List<ImageDescriptor> imageDescriptors;
-        int nextBinding;
+          int nextBinding;
+          int accelerationStructureBinding = -1;
+          int accelerationStructureStages;
+          int storageBufferBinding = -1;
+          int storageBufferStages;
 
         SPIRV vertShaderSPIRV;
         SPIRV fragShaderSPIRV;
@@ -572,10 +691,26 @@ public abstract class Pipeline {
             this.imageDescriptors = imageDescriptors;
         }
 
-        public void setSPIRVs(SPIRV vertShaderSPIRV, SPIRV fragShaderSPIRV) {
+          public void setSPIRVs(SPIRV vertShaderSPIRV, SPIRV fragShaderSPIRV) {
             this.vertShaderSPIRV = vertShaderSPIRV;
             this.fragShaderSPIRV = fragShaderSPIRV;
-        }
+          }
+
+          public void setAccelerationStructure(int binding, int stages) {
+              this.accelerationStructureBinding = binding;
+              this.accelerationStructureStages = stages;
+              if (binding >= this.nextBinding) {
+                  this.nextBinding = binding + 1;
+              }
+          }
+
+          public void setStorageBuffer(int binding, int stages) {
+              this.storageBufferBinding = binding;
+              this.storageBufferStages = stages;
+              if (binding >= this.nextBinding) {
+                  this.nextBinding = binding + 1;
+              }
+          }
 
         public void compileShaders() {
             String resourcePath = "/assets/vulkanmod/shaders/";

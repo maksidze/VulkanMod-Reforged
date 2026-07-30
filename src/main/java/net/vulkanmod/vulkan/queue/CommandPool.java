@@ -76,11 +76,19 @@ public class CommandPool {
 
             CommandBuffer commandBuffer = availableCmdBuffers.poll();
 
+            int resetResult = vkResetCommandBuffer(commandBuffer.handle, 0);
+            if (resetResult != VK_SUCCESS) {
+                throw new RuntimeException("Failed to reset command buffer: " + resetResult);
+            }
+
             VkCommandBufferBeginInfo beginInfo = VkCommandBufferBeginInfo.calloc(stack);
             beginInfo.sType(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
             beginInfo.flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-            vkBeginCommandBuffer(commandBuffer.handle, beginInfo);
+            int beginResult = vkBeginCommandBuffer(commandBuffer.handle, beginInfo);
+            if (beginResult != VK_SUCCESS) {
+                throw new RuntimeException("Failed to begin command buffer: " + beginResult);
+            }
 
 //            current++;
 
@@ -93,15 +101,24 @@ public class CommandPool {
         try (MemoryStack stack = stackPush()) {
             long fence = commandBuffer.fence;
 
-            vkEndCommandBuffer(commandBuffer.handle);
+            int endResult = vkEndCommandBuffer(commandBuffer.handle);
+            if (endResult != VK_SUCCESS) {
+                throw new RuntimeException("Failed to end command buffer: " + endResult);
+            }
 
-            vkResetFences(Vulkan.getVkDevice(), commandBuffer.fence);
+            int resetFenceResult = vkResetFences(Vulkan.getVkDevice(), commandBuffer.fence);
+            if (resetFenceResult != VK_SUCCESS) {
+                throw new RuntimeException("Failed to reset command-buffer fence: " + resetFenceResult);
+            }
 
             VkSubmitInfo submitInfo = VkSubmitInfo.calloc(stack);
             submitInfo.sType(VK_STRUCTURE_TYPE_SUBMIT_INFO);
             submitInfo.pCommandBuffers(stack.pointers(commandBuffer.handle));
 
-            vkQueueSubmit(queue, submitInfo, fence);
+            int submitResult = vkQueueSubmit(queue, submitInfo, fence);
+            if (submitResult != VK_SUCCESS) {
+                throw new RuntimeException("Failed to submit command buffer: " + submitResult);
+            }
 
             return fence;
         }

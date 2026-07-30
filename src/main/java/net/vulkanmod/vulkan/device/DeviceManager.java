@@ -203,7 +203,7 @@ public abstract class DeviceManager {
             createInfo.sType$Default();
             createInfo.sType(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
             createInfo.pQueueCreateInfos(queueCreateInfos);
-            createInfo.pEnabledFeatures(deviceFeatures.features());
+            createInfo.pEnabledFeatures(null);
 
             rayTracingEnabled = Vulkan.RAY_TRACING_REQUESTED
                     && device.rayTracingCapabilities().isPipelineSupported();
@@ -223,13 +223,16 @@ public abstract class DeviceManager {
                 optionalFeatureChain = device.rayTracingCapabilities()
                         .createEnabledFeatureChain(stack, optionalFeatureChain);
                 enabledExtensions.addAll(device.rayTracingCapabilities().getEnabledExtensions());
+                Initializer.LOGGER.info("Enabled RT device extensions: {}", enabledExtensions);
             }
             deviceVulkan11Features.pNext(optionalFeatureChain);
-            createInfo.pNext(deviceVulkan11Features);
+            deviceFeatures.pNext(deviceVulkan11Features.address());
+            createInfo.pNext(deviceFeatures.address());
 
             createInfo.ppEnabledExtensionNames(asPointerBuffer(enabledExtensions));
 
-            createInfo.ppEnabledLayerNames(Vulkan.ENABLE_VALIDATION_LAYERS ? asPointerBuffer(Vulkan.VALIDATION_LAYERS) : null);
+            // Device layers are legacy and must remain disabled. Validation is enabled at instance level.
+            createInfo.ppEnabledLayerNames(null);
 
             PointerBuffer pDevice = stack.pointers(VK_NULL_HANDLE);
 
@@ -397,6 +400,12 @@ public abstract class DeviceManager {
 
     public static boolean isRayTracingEnabled() {
         return rayTracingEnabled;
+    }
+
+    public static boolean isRayQueryEnabled() {
+        return rayTracingEnabled
+                && device != null
+                && device.rayTracingCapabilities().isRayQuerySupported();
     }
 
     public static RayTracingCapabilities getRayTracingCapabilities() {

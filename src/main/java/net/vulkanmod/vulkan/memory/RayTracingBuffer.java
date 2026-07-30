@@ -34,22 +34,26 @@ public final class RayTracingBuffer extends Buffer {
     }
 
     public void upload(ByteBuffer source) {
+        upload(source, 0);
+    }
+
+    public void upload(ByteBuffer source, int destinationOffset) {
         if (!this.type.mappable()) {
             throw new IllegalStateException("Cannot directly upload to a non-mappable ray tracing buffer");
         }
 
         int size = source.remaining();
-        if (size > this.bufferSize) {
+        if (destinationOffset < 0 || destinationOffset > this.bufferSize - size) {
             throw new IllegalArgumentException("Upload exceeds ray tracing buffer capacity");
         }
 
         MemoryUtil.memCopy(
                 MemoryUtil.memAddress(source) + source.position(),
-                this.data.get(0),
+                this.data.get(0) + destinationOffset,
                 size
         );
-        this.offset = 0;
-        this.usedBytes = size;
+        this.offset = destinationOffset;
+        this.usedBytes = Math.max(this.usedBytes, destinationOffset + size);
     }
 
     public long getDeviceAddress() {

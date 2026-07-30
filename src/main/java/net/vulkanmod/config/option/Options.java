@@ -45,6 +45,10 @@ public abstract class Options {
                 Options.getGraphicsOpts()));
 
         optionPages.add(new OptionPage(
+                Component.translatable("vulkanmod.options.pages.rayTracing").getString(),
+                Options.getRayTracingOpts()));
+
+        optionPages.add(new OptionPage(
                 Component.translatable("vulkanmod.options.pages.optimizations").getString(),
                 Options.getOptimizationOpts()));
 
@@ -398,6 +402,149 @@ public abstract class Options {
                 })
         };
 
+    }
+
+    public static OptionBlock[] getRayTracingOpts() {
+        CyclingOption<Integer> shadowRays = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.shadowRays"),
+                new Integer[]{1, 2, 4, 8},
+                value -> {
+                    config.rayTracingShadowRays = sanitizeShadowRayCount(value);
+                    if (config.rayTracingShadowRays == 1) {
+                        config.rayTracingShadowSoftness = 0;
+                    }
+                },
+                () -> sanitizeShadowRayCount(config.rayTracingShadowRays)
+        );
+        shadowRays
+                .setTranslator(value -> Component.literal(value.toString()))
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.shadowRays.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
+        RangeOption shadowSoftness = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.shadowSoftness"),
+                0,
+                100,
+                5,
+                value -> Component.literal(value + "%"),
+                value -> config.rayTracingShadowSoftness = config.rayTracingShadowRays > 1
+                        ? Math.max(0, Math.min(100, value))
+                        : 0,
+                () -> config.rayTracingShadowRays > 1
+                        ? Math.max(0, Math.min(100, config.rayTracingShadowSoftness))
+                        : 0
+        );
+        shadowSoftness
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.shadowSoftness.tooltip"))
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && shadowRays.getNewValue() > 1);
+
+        shadowRays.setOnChange(() -> {
+            if (shadowRays.getNewValue() == 1) {
+                shadowSoftness.setNewValue(0);
+            }
+            shadowSoftness.updateActiveState();
+        });
+
+        RangeOption shadowDarkness = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.shadowDarkness"),
+                0,
+                100,
+                5,
+                value -> Component.literal(value + "%"),
+                value -> config.rayTracingShadowDarkness = Math.max(0, Math.min(100, value)),
+                () -> Math.max(0, Math.min(100, config.rayTracingShadowDarkness))
+        );
+        shadowDarkness
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.shadowDarkness.tooltip"))
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
+        RangeOption shadowDistance = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.shadowDistance"),
+                32,
+                256,
+                32,
+                value -> Component.literal(value + " blocks"),
+                value -> config.rayTracingShadowDistance = Math.max(32, Math.min(256, value)),
+                () -> Math.max(32, Math.min(256, config.rayTracingShadowDistance))
+        );
+        shadowDistance
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.shadowDistance.tooltip"))
+                .setImpact(PerformanceImpact.MEDIUM)
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
+        SwitchOption directLighting = new SwitchOption(
+                Component.translatable("vulkanmod.options.rayTracing.directLighting"),
+                value -> {
+                    config.rayTracingDirectLighting = value;
+                    if (minecraft.levelRenderer != null) {
+                        minecraft.levelRenderer.allChanged();
+                    }
+                },
+                () -> config.rayTracingDirectLighting
+        );
+        directLighting
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.directLighting.tooltip"))
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
+        RangeOption sunLight = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.sunLight"),
+                0, 200, 10,
+                value -> Component.literal(value + "%"),
+                value -> config.rayTracingSunLight = Math.max(0, Math.min(200, value)),
+                () -> Math.max(0, Math.min(200, config.rayTracingSunLight))
+        );
+        sunLight
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.sunLight.tooltip"))
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && directLighting.getNewValue());
+
+        RangeOption skyLight = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.skyLight"),
+                0, 200, 10,
+                value -> Component.literal(value + "%"),
+                value -> config.rayTracingSkyLight = Math.max(0, Math.min(200, value)),
+                () -> Math.max(0, Math.min(200, config.rayTracingSkyLight))
+        );
+        skyLight
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.skyLight.tooltip"))
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && directLighting.getNewValue());
+
+        RangeOption blockLight = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.blockLight"),
+                0, 200, 10,
+                value -> Component.literal(value + "%"),
+                value -> config.rayTracingBlockLight = Math.max(0, Math.min(200, value)),
+                () -> Math.max(0, Math.min(200, config.rayTracingBlockLight))
+        );
+        blockLight
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.blockLight.tooltip"))
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && directLighting.getNewValue());
+
+        directLighting.setOnChange(() -> {
+            sunLight.updateActiveState();
+            skyLight.updateActiveState();
+            blockLight.updateActiveState();
+        });
+
+        return new OptionBlock[]{
+                new OptionBlock("", new Option<?>[]{
+                        shadowRays,
+                        shadowSoftness,
+                        shadowDarkness,
+                        shadowDistance,
+                        directLighting,
+                        sunLight,
+                        skyLight,
+                        blockLight
+                })
+        };
+    }
+
+    private static int sanitizeShadowRayCount(int value) {
+        if (value <= 1) return 1;
+        if (value <= 2) return 2;
+        if (value <= 4) return 4;
+        return 8;
     }
 
     public static OptionBlock[] getOtherOpts() {

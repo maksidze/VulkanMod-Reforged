@@ -34,6 +34,14 @@ public class Config {
 
     public int ambientOcclusion = 1;
     public boolean textureAnimations = true;
+    public int rayTracingShadowRays = 4;
+    public int rayTracingShadowSoftness = 25;
+    public int rayTracingShadowDarkness = 62;
+    public int rayTracingShadowDistance = 256;
+    public boolean rayTracingDirectLighting = true;
+    public int rayTracingSunLight = 100;
+    public int rayTracingSkyLight = 100;
+    public int rayTracingBlockLight = 100;
 
     public void write() {
 

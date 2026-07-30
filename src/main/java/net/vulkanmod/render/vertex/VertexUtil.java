@@ -13,7 +13,7 @@ public class VertexUtil {
     }
 
     public static int packNormal(int x, int y, int z) {
-        return (x & 0xFF) | (y & 0xFF) << 8|  (z & 0xFF) << 16;
+        return packNormal((float) x, (float) y, (float) z);
     }
 
     public static float unpackN1(int i) {

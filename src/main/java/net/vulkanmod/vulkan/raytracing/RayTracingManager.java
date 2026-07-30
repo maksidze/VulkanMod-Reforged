@@ -22,6 +22,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 import static org.lwjgl.system.MemoryUtil.NULL;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.*;
@@ -38,8 +39,14 @@ public final class RayTracingManager {
     private static final int COMPRESSED_TERRAIN_STRIDE = 20;
     private static final float POSITION_SCALE = 1.0f / 2048.0f;
     private static final float POSITION_OFFSET = 4.0f;
+    private static final int UV_ENTRY_BYTES = Integer.BYTES;
+    private static final int MAX_UV_ENTRIES = 1 << 24;
+    private static final int DEFAULT_UV_BUFFER_MIB = 64;
 
     private static RayTracingManager INSTANCE;
+    private static boolean loggedGeometrySample;
+    private static boolean loggedBottomLevelSample;
+    private static boolean loggedTopLevelSample;
 
     private final Map<RenderSection, PendingGeometry> pendingBuilds = new IdentityHashMap<>();
     private final Set<RenderSection> pendingRemovals =
@@ -47,13 +54,31 @@ public final class RayTracingManager {
     private final Map<RenderSection, AccelerationStructure> bottomLevels = new IdentityHashMap<>();
 
     private AccelerationStructure topLevel;
+    private RayTracingBuffer uvBuffer;
+    private int uvHighWaterMark;
+    private final TreeMap<Integer, Integer> freeUvRanges = new TreeMap<>();
+    private long debugQueryPool;
     private boolean enabled;
 
     private RayTracingManager() {
         this.enabled = DeviceManager.isRayTracingEnabled()
                 && Boolean.parseBoolean(System.getProperty("vulkanmod.rayTracing.buildStructures", "true"));
         if (this.enabled) {
-            Initializer.LOGGER.info("RT acceleration-structure builder initialized (SOLID terrain prototype)");
+            int configuredMib = Integer.getInteger(
+                    "vulkanmod.rayTracing.uvBufferMiB",
+                    DEFAULT_UV_BUFFER_MIB
+            );
+            int clampedMib = Math.max(4, Math.min(DEFAULT_UV_BUFFER_MIB, configuredMib));
+            int uvBufferBytes = clampedMib * 1024 * 1024;
+            this.uvBuffer = new RayTracingBuffer(
+                    uvBufferBytes,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    MemoryTypes.HOST_MEM
+            );
+            Initializer.LOGGER.info(
+                    "RT acceleration-structure builder initialized with {} MiB UV storage",
+                    uvBufferBytes / (1024 * 1024)
+            );
         }
     }
 
@@ -68,8 +93,25 @@ public final class RayTracingManager {
         return INSTANCE != null && INSTANCE.enabled;
     }
 
-    public static void queueTerrainSection(RenderSection section, List<ByteBuffer> compressedLayers, int stride) {
+    public static boolean shouldEnableRayQueryPass() {
+        return DeviceManager.isRayQueryEnabled()
+                && Boolean.parseBoolean(System.getProperty("vulkanmod.rayTracing.buildStructures", "true"))
+                && Boolean.parseBoolean(System.getProperty("vulkanmod.rayTracing.shadows", "true"));
+    }
+
+    public static void queueTerrainSection(
+            RenderSection section,
+            List<ByteBuffer> compressedLayers,
+            int opaqueVertexCount,
+            int stride
+    ) {
         if (!isEnabled()) {
+            return;
+        }
+        if (isSinglePlaneDebugEnabled()
+                && (INSTANCE.topLevel != null
+                || !INSTANCE.bottomLevels.isEmpty()
+                || !INSTANCE.pendingBuilds.isEmpty())) {
             return;
         }
         if (compressedLayers == null || compressedLayers.isEmpty()) {
@@ -82,7 +124,7 @@ public final class RayTracingManager {
             return;
         }
 
-        long geometrySignature = geometrySignature(compressedLayers, stride);
+        long geometrySignature = geometrySignature(compressedLayers, stride) ^ opaqueVertexCount;
         PendingGeometry queued = INSTANCE.pendingBuilds.get(section);
         if (queued != null && queued.signature == geometrySignature) {
             return;
@@ -104,7 +146,27 @@ public final class RayTracingManager {
 
         PendingGeometry geometry;
         try {
-            geometry = decodeTerrainQuads(compressedLayers, stride, geometrySignature);
+            geometry = decodeTerrainQuads(
+                    compressedLayers,
+                    stride,
+                    geometrySignature,
+                    opaqueVertexCount,
+                    section.xOffset(),
+                    section.yOffset(),
+                    section.zOffset()
+            );
+            if (!loggedGeometrySample && geometry.vertexCount > 0) {
+                loggedGeometrySample = true;
+                Initializer.LOGGER.info(
+                        "RT geometry sample: section=({}, {}, {}) firstWorldVertex=({}, {}, {}) vertices={} primitives={}",
+                        section.xOffset(), section.yOffset(), section.zOffset(),
+                        geometry.vertices.getFloat(0),
+                        geometry.vertices.getFloat(Float.BYTES),
+                        geometry.vertices.getFloat(Float.BYTES * 2),
+                        geometry.vertexCount,
+                        geometry.primitiveCount
+                );
+            }
         } catch (RuntimeException exception) {
             Initializer.LOGGER.error("Failed to decode terrain section geometry for RT; removing its BLAS", exception);
             removeSection(section);
@@ -119,6 +181,9 @@ public final class RayTracingManager {
 
     public static void removeSection(RenderSection section) {
         if (INSTANCE == null || !INSTANCE.enabled) {
+            return;
+        }
+        if (isSinglePlaneDebugEnabled() && INSTANCE.topLevel != null) {
             return;
         }
 
@@ -153,6 +218,22 @@ public final class RayTracingManager {
         return INSTANCE == null || INSTANCE.topLevel == null ? VK_NULL_HANDLE : INSTANCE.topLevel.handle;
     }
 
+    public static long getTopLevelDeviceAddress() {
+        return INSTANCE == null || INSTANCE.topLevel == null ? 0L : INSTANCE.topLevel.deviceAddress;
+    }
+
+    public static long getUvBufferHandle() {
+        return INSTANCE == null || INSTANCE.uvBuffer == null
+                ? VK_NULL_HANDLE
+                : INSTANCE.uvBuffer.getId();
+    }
+
+    public static long getUvBufferSize() {
+        return INSTANCE == null || INSTANCE.uvBuffer == null
+                ? 0L
+                : INSTANCE.uvBuffer.getBufferSize();
+    }
+
     public static int getInstanceCount() {
         return INSTANCE == null ? 0 : INSTANCE.bottomLevels.size();
     }
@@ -167,6 +248,10 @@ public final class RayTracingManager {
     private void processPendingBuildsInternal() {
         if (this.pendingBuilds.isEmpty() && this.pendingRemovals.isEmpty()) {
             return;
+        }
+
+        if (shouldEnableRayQueryPass() && this.topLevel != null) {
+            Vulkan.waitIdle();
         }
 
         int removed = 0;
@@ -197,14 +282,18 @@ public final class RayTracingManager {
                 return;
             }
 
-            Map<RenderSection, PendingGeometry> builds = new IdentityHashMap<>(this.pendingBuilds);
-            this.pendingBuilds.clear();
+            int buildBudget = Math.max(1, Integer.getInteger("vulkanmod.rayTracing.maxBuildsPerFrame", 32));
+            Map<RenderSection, PendingGeometry> builds = new IdentityHashMap<>();
+            var pendingIterator = this.pendingBuilds.entrySet().iterator();
+            while (pendingIterator.hasNext() && builds.size() < buildBudget) {
+                Map.Entry<RenderSection, PendingGeometry> entry = pendingIterator.next();
+                builds.put(entry.getKey(), entry.getValue());
+                pendingIterator.remove();
+            }
             consumedGeometry.addAll(builds.values());
 
             CommandPool.CommandBuffer commandBuffer = DeviceManager.getGraphicsQueue().beginCommands();
             VkCommandBuffer vkCommandBuffer = commandBuffer.getHandle();
-            recordHostWriteBarrier(vkCommandBuffer);
-
             for (Map.Entry<RenderSection, PendingGeometry> entry : builds.entrySet()) {
                 RenderSection section = entry.getKey();
                 PendingGeometry geometry = entry.getValue();
@@ -224,12 +313,20 @@ public final class RayTracingManager {
                 this.bottomLevels.put(section, bottomLevel);
                 built++;
             }
+            recordUvHostWriteBarrier(vkCommandBuffer);
             recordAccelerationStructureBarrier(vkCommandBuffer);
             if (!this.bottomLevels.isEmpty()) {
                 this.topLevel = recordTopLevelBuild(vkCommandBuffer, temporaryBuffers);
+                recordTraceReadBarrier(vkCommandBuffer);
+                if (isSinglePlaneDebugEnabled()) {
+                    recordDebugSizeQueries(vkCommandBuffer);
+                }
             }
 
             submitAndWait(commandBuffer);
+            if (isSinglePlaneDebugEnabled()) {
+                logDebugSizeQueries();
+            }
 
             Initializer.LOGGER.info(
                     "RT acceleration structures updated: BLAS built={} removed={} totalBLAS={} TLAS instances={}",
@@ -251,8 +348,8 @@ public final class RayTracingManager {
     private void buildTopLevelOnly(List<RayTracingBuffer> temporaryBuffers) {
         CommandPool.CommandBuffer commandBuffer = DeviceManager.getGraphicsQueue().beginCommands();
         VkCommandBuffer vkCommandBuffer = commandBuffer.getHandle();
-        recordHostWriteBarrier(vkCommandBuffer);
         this.topLevel = recordTopLevelBuild(vkCommandBuffer, temporaryBuffers);
+        recordTraceReadBarrier(vkCommandBuffer);
         submitAndWait(commandBuffer);
     }
 
@@ -261,21 +358,19 @@ public final class RayTracingManager {
             PendingGeometry geometryData,
             List<RayTracingBuffer> temporaryBuffers
     ) {
-        RayTracingBuffer vertexBuffer = new RayTracingBuffer(
-                geometryData.vertices.remaining(),
+        RayTracingBuffer vertexBuffer = uploadBuildInput(
+                commandBuffer,
+                geometryData.vertices,
                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
-                MemoryTypes.HOST_MEM
+                temporaryBuffers
         );
-        vertexBuffer.upload(geometryData.vertices);
-        temporaryBuffers.add(vertexBuffer);
 
-        RayTracingBuffer indexBuffer = new RayTracingBuffer(
-                geometryData.indices.remaining(),
+        RayTracingBuffer indexBuffer = uploadBuildInput(
+                commandBuffer,
+                geometryData.indices,
                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
-                MemoryTypes.HOST_MEM
+                temporaryBuffers
         );
-        indexBuffer.upload(geometryData.indices);
-        temporaryBuffers.add(indexBuffer);
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkAccelerationStructureGeometryKHR.Buffer geometries =
@@ -283,7 +378,10 @@ public final class RayTracingManager {
             VkAccelerationStructureGeometryKHR geometry = geometries.get(0);
             geometry.sType$Default();
             geometry.geometryType(VK_GEOMETRY_TYPE_TRIANGLES_KHR);
-            geometry.flags(VK_GEOMETRY_OPAQUE_BIT_KHR);
+            // Candidate intersections are confirmed in the fragment shader.
+            // SOLID primitives are always accepted; CUTOUT_MIPPED primitives use
+            // a stable coverage mask until per-triangle atlas UVs are available.
+            geometry.flags(0);
 
             VkAccelerationStructureGeometryTrianglesDataKHR triangles = geometry.geometry().triangles();
             triangles.sType$Default();
@@ -291,8 +389,13 @@ public final class RayTracingManager {
             triangles.vertexData().deviceAddress(vertexBuffer.getDeviceAddress());
             triangles.vertexStride(Float.BYTES * 3L);
             triangles.maxVertex(geometryData.vertexCount - 1);
-            triangles.indexType(VK_INDEX_TYPE_UINT32);
-            triangles.indexData().deviceAddress(indexBuffer.getDeviceAddress());
+            if (isSinglePlaneDebugEnabled()) {
+                triangles.indexType(VK_INDEX_TYPE_NONE_KHR);
+                triangles.indexData().deviceAddress(NULL);
+            } else {
+                triangles.indexType(VK_INDEX_TYPE_UINT32);
+                triangles.indexData().deviceAddress(indexBuffer.getDeviceAddress());
+            }
             triangles.transformData().deviceAddress(NULL);
 
             VkAccelerationStructureBuildGeometryInfoKHR.Buffer buildInfos =
@@ -300,8 +403,14 @@ public final class RayTracingManager {
             VkAccelerationStructureBuildGeometryInfoKHR buildInfo = buildInfos.get(0);
             buildInfo.sType$Default();
             buildInfo.type(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR);
-            buildInfo.flags(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
+            buildInfo.flags(
+                    VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR
+                            | (isSinglePlaneDebugEnabled()
+                            ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR
+                            : 0)
+            );
             buildInfo.mode(VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR);
+            buildInfo.geometryCount(1);
             buildInfo.pGeometries(geometries);
 
             VkAccelerationStructureBuildSizesInfoKHR sizeInfo =
@@ -330,6 +439,28 @@ public final class RayTracingManager {
             range.get(0).primitiveCount(geometryData.primitiveCount);
             PointerBuffer ranges = stack.pointers(range.address());
             vkCmdBuildAccelerationStructuresKHR(commandBuffer, buildInfos, ranges);
+            int uvAllocationOffset = allocateUvRange(geometryData.uvData.remaining());
+            try {
+                this.uvBuffer.upload(geometryData.uvData, uvAllocationOffset);
+                result.uvAllocationOffset = uvAllocationOffset;
+                result.uvAllocationSize = geometryData.uvData.remaining();
+                result.uvBaseEntry = uvAllocationOffset / UV_ENTRY_BYTES;
+            } catch (Throwable throwable) {
+                freeUvRange(uvAllocationOffset, geometryData.uvData.remaining());
+                result.destroy();
+                throw throwable;
+            }
+            if (!loggedBottomLevelSample) {
+                loggedBottomLevelSample = true;
+                Initializer.LOGGER.info(
+                        "RT BLAS sample: handle={} address={} vertexAddress={} indexAddress={} scratchAddress={}",
+                        result.handle,
+                        result.deviceAddress,
+                        vertexBuffer.getDeviceAddress(),
+                        indexBuffer.getDeviceAddress(),
+                        buildInfo.scratchData().deviceAddress()
+                );
+            }
             return result;
         }
     }
@@ -349,16 +480,16 @@ public final class RayTracingManager {
             transform.matrix(0, 1.0f);
             transform.matrix(1, 0.0f);
             transform.matrix(2, 0.0f);
-            transform.matrix(3, bottomLevel.sectionX);
+            transform.matrix(3, 0.0f);
             transform.matrix(4, 0.0f);
             transform.matrix(5, 1.0f);
             transform.matrix(6, 0.0f);
-            transform.matrix(7, bottomLevel.sectionY);
+            transform.matrix(7, 0.0f);
             transform.matrix(8, 0.0f);
             transform.matrix(9, 0.0f);
             transform.matrix(10, 1.0f);
-            transform.matrix(11, bottomLevel.sectionZ);
-            instance.instanceCustomIndex(index);
+            transform.matrix(11, 0.0f);
+            instance.instanceCustomIndex(bottomLevel.uvBaseEntry);
             instance.mask(0xFF);
             instance.instanceShaderBindingTableRecordOffset(0);
             instance.flags(VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR);
@@ -367,15 +498,14 @@ public final class RayTracingManager {
         }
 
         int instanceBytes = Math.multiplyExact(instanceCount, VkAccelerationStructureInstanceKHR.SIZEOF);
-        RayTracingBuffer instanceBuffer = new RayTracingBuffer(
-                instanceBytes,
-                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
-                MemoryTypes.HOST_MEM
-        );
         ByteBuffer instanceData = MemoryUtil.memByteBuffer(instances.address(), instanceBytes);
-        instanceBuffer.upload(instanceData);
+        RayTracingBuffer instanceBuffer = uploadBuildInput(
+                commandBuffer,
+                instanceData,
+                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+                temporaryBuffers
+        );
         instances.free();
-        temporaryBuffers.add(instanceBuffer);
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkAccelerationStructureGeometryKHR.Buffer geometries =
@@ -394,8 +524,14 @@ public final class RayTracingManager {
             VkAccelerationStructureBuildGeometryInfoKHR buildInfo = buildInfos.get(0);
             buildInfo.sType$Default();
             buildInfo.type(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR);
-            buildInfo.flags(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
+            buildInfo.flags(
+                    VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR
+                            | (isSinglePlaneDebugEnabled()
+                            ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR
+                            : 0)
+            );
             buildInfo.mode(VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR);
+            buildInfo.geometryCount(1);
             buildInfo.pGeometries(geometries);
 
             VkAccelerationStructureBuildSizesInfoKHR sizeInfo =
@@ -423,10 +559,50 @@ public final class RayTracingManager {
                     VkAccelerationStructureBuildRangeInfoKHR.calloc(1, stack);
             range.get(0).primitiveCount(instanceCount);
             PointerBuffer ranges = stack.pointers(range.address());
-            recordHostWriteBarrier(commandBuffer);
             vkCmdBuildAccelerationStructuresKHR(commandBuffer, buildInfos, ranges);
+            if (!loggedTopLevelSample) {
+                loggedTopLevelSample = true;
+                Initializer.LOGGER.info(
+                        "RT TLAS sample: handle={} address={} instanceAddress={} instanceAlignment={} scratchAddress={}",
+                        result.handle,
+                        result.deviceAddress,
+                        instanceBuffer.getDeviceAddress(),
+                        Long.remainderUnsigned(instanceBuffer.getDeviceAddress(), 16L),
+                        buildInfo.scratchData().deviceAddress()
+                );
+            }
             return result;
         }
+    }
+
+    private RayTracingBuffer uploadBuildInput(
+            VkCommandBuffer commandBuffer,
+            ByteBuffer source,
+            int usage,
+            List<RayTracingBuffer> temporaryBuffers
+    ) {
+        int size = source.remaining();
+        RayTracingBuffer staging = new RayTracingBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, MemoryTypes.HOST_MEM);
+        staging.upload(source);
+        temporaryBuffers.add(staging);
+
+        RayTracingBuffer deviceLocal = new RayTracingBuffer(
+                size,
+                usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                MemoryTypes.GPU_MEM
+        );
+        temporaryBuffers.add(deviceLocal);
+
+        recordHostWriteBarrier(commandBuffer);
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkBufferCopy.Buffer copy = VkBufferCopy.calloc(1, stack);
+            copy.get(0).srcOffset(0L);
+            copy.get(0).dstOffset(0L);
+            copy.get(0).size(size);
+            vkCmdCopyBuffer(commandBuffer, staging.getId(), deviceLocal.getId(), copy);
+        }
+        recordTransferWriteBarrier(commandBuffer);
+        return deviceLocal;
     }
 
     private AccelerationStructure createAccelerationStructure(int type, long size) {
@@ -487,7 +663,90 @@ public final class RayTracingManager {
         return (int) size;
     }
 
+    private int allocateUvRange(int requestedBytes) {
+        int size = (requestedBytes + UV_ENTRY_BYTES - 1) & -UV_ENTRY_BYTES;
+        for (var iterator = this.freeUvRanges.entrySet().iterator(); iterator.hasNext(); ) {
+            Map.Entry<Integer, Integer> freeRange = iterator.next();
+            if (freeRange.getValue() < size) {
+                continue;
+            }
+
+            int offset = freeRange.getKey();
+            int remainder = freeRange.getValue() - size;
+            iterator.remove();
+            if (remainder > 0) {
+                this.freeUvRanges.put(offset + size, remainder);
+            }
+            return offset;
+        }
+
+        if (this.uvBuffer == null || this.uvHighWaterMark > this.uvBuffer.getBufferSize() - size) {
+            throw new IllegalStateException(
+                    "RT UV storage exhausted: requested=" + size
+                            + " used=" + this.uvHighWaterMark
+                            + " capacity=" + (this.uvBuffer == null ? 0 : this.uvBuffer.getBufferSize())
+            );
+        }
+
+        int offset = this.uvHighWaterMark;
+        this.uvHighWaterMark += size;
+        return offset;
+    }
+
+    private void freeUvRange(int offset, int size) {
+        if (offset < 0 || size <= 0) {
+            return;
+        }
+
+        int mergedOffset = offset;
+        int mergedSize = size;
+        Map.Entry<Integer, Integer> lower = this.freeUvRanges.lowerEntry(offset);
+        if (lower != null && lower.getKey() + lower.getValue() == offset) {
+            mergedOffset = lower.getKey();
+            mergedSize += lower.getValue();
+            this.freeUvRanges.remove(lower.getKey());
+        }
+
+        Map.Entry<Integer, Integer> higher = this.freeUvRanges.ceilingEntry(mergedOffset);
+        if (higher != null && mergedOffset + mergedSize == higher.getKey()) {
+            mergedSize += higher.getValue();
+            this.freeUvRanges.remove(higher.getKey());
+        }
+
+        if (mergedOffset + mergedSize == this.uvHighWaterMark) {
+            this.uvHighWaterMark = mergedOffset;
+            while (true) {
+                Map.Entry<Integer, Integer> tail = this.freeUvRanges.lowerEntry(this.uvHighWaterMark);
+                if (tail == null || tail.getKey() + tail.getValue() != this.uvHighWaterMark) {
+                    break;
+                }
+                this.uvHighWaterMark = tail.getKey();
+                this.freeUvRanges.remove(tail.getKey());
+            }
+        } else {
+            this.freeUvRanges.put(mergedOffset, mergedSize);
+        }
+    }
+
     private static void recordHostWriteBarrier(VkCommandBuffer commandBuffer) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkMemoryBarrier.Buffer barrier = VkMemoryBarrier.calloc(1, stack);
+            barrier.get(0).sType$Default();
+            barrier.get(0).srcAccessMask(VK_ACCESS_HOST_WRITE_BIT);
+            barrier.get(0).dstAccessMask(VK_ACCESS_TRANSFER_READ_BIT);
+            vkCmdPipelineBarrier(
+                    commandBuffer,
+                    VK_PIPELINE_STAGE_HOST_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0,
+                    barrier,
+                    null,
+                    null
+            );
+        }
+    }
+
+    private static void recordUvHostWriteBarrier(VkCommandBuffer commandBuffer) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkMemoryBarrier.Buffer barrier = VkMemoryBarrier.calloc(1, stack);
             barrier.get(0).sType$Default();
@@ -496,6 +755,24 @@ public final class RayTracingManager {
             vkCmdPipelineBarrier(
                     commandBuffer,
                     VK_PIPELINE_STAGE_HOST_BIT,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0,
+                    barrier,
+                    null,
+                    null
+            );
+        }
+    }
+
+    private static void recordTransferWriteBarrier(VkCommandBuffer commandBuffer) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkMemoryBarrier.Buffer barrier = VkMemoryBarrier.calloc(1, stack);
+            barrier.get(0).sType$Default();
+            barrier.get(0).srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT);
+            barrier.get(0).dstAccessMask(VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+            vkCmdPipelineBarrier(
+                    commandBuffer,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                     0,
                     barrier,
@@ -523,6 +800,73 @@ public final class RayTracingManager {
         }
     }
 
+    private static void recordTraceReadBarrier(VkCommandBuffer commandBuffer) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkMemoryBarrier.Buffer barrier = VkMemoryBarrier.calloc(1, stack);
+            barrier.get(0).sType$Default();
+            barrier.get(0).srcAccessMask(VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+            barrier.get(0).dstAccessMask(VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+            vkCmdPipelineBarrier(
+                    commandBuffer,
+                    VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0,
+                    barrier,
+                    null,
+                    null
+            );
+        }
+    }
+
+    private void recordDebugSizeQueries(VkCommandBuffer commandBuffer) {
+        if (this.debugQueryPool == VK_NULL_HANDLE) {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkQueryPoolCreateInfo createInfo = VkQueryPoolCreateInfo.calloc(stack);
+                createInfo.sType$Default();
+                createInfo.queryType(VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR);
+                createInfo.queryCount(2);
+                LongBuffer handle = stack.mallocLong(1);
+                Vulkan.checkResult(
+                        vkCreateQueryPool(Vulkan.getVkDevice(), createInfo, null, handle),
+                        "Failed to create RT diagnostic query pool"
+                );
+                this.debugQueryPool = handle.get(0);
+            }
+        }
+
+        recordAccelerationStructureBarrier(commandBuffer);
+        vkCmdResetQueryPool(commandBuffer, this.debugQueryPool, 0, 2);
+        long bottomLevelHandle = this.bottomLevels.values().iterator().next().handle;
+        vkCmdWriteAccelerationStructuresPropertiesKHR(
+                commandBuffer,
+                new long[]{bottomLevelHandle, this.topLevel.handle},
+                VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                this.debugQueryPool,
+                0
+        );
+    }
+
+    private void logDebugSizeQueries() {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            LongBuffer results = stack.mallocLong(2);
+            int result = vkGetQueryPoolResults(
+                    Vulkan.getVkDevice(),
+                    this.debugQueryPool,
+                    0,
+                    2,
+                    results,
+                    Long.BYTES,
+                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT
+            );
+            Vulkan.checkResult(result, "Failed to read RT diagnostic size queries");
+            Initializer.LOGGER.info(
+                    "RT GPU build verification: BLAS compactedSize={} TLAS compactedSize={}",
+                    results.get(0),
+                    results.get(1)
+            );
+        }
+    }
+
     private static void submitAndWait(CommandPool.CommandBuffer commandBuffer) {
         DeviceManager.getGraphicsQueue().submitCommands(commandBuffer);
         Synchronization.INSTANCE.addCommandBuffer(commandBuffer);
@@ -546,7 +890,20 @@ public final class RayTracingManager {
     }
 
     private void cleanUp() {
+        if (this.topLevel != null || !this.bottomLevels.isEmpty()) {
+            Vulkan.waitIdle();
+        }
         destroyAllStructures();
+        if (this.debugQueryPool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(Vulkan.getVkDevice(), this.debugQueryPool, null);
+            this.debugQueryPool = VK_NULL_HANDLE;
+        }
+        if (this.uvBuffer != null) {
+            this.uvBuffer.freeBuffer();
+            this.uvBuffer = null;
+        }
+        this.freeUvRanges.clear();
+        this.uvHighWaterMark = 0;
         this.enabled = false;
     }
 
@@ -564,6 +921,10 @@ public final class RayTracingManager {
                     hash ^= source.get(positionOffset + componentByte) & 0xFFL;
                     hash *= 0x100000001b3L;
                 }
+                for (int uvByte = 12; uvByte < 16; uvByte++) {
+                    hash ^= source.get(positionOffset + uvByte) & 0xFFL;
+                    hash *= 0x100000001b3L;
+                }
             }
         }
         return hash;
@@ -572,8 +933,16 @@ public final class RayTracingManager {
     private static PendingGeometry decodeTerrainQuads(
             List<ByteBuffer> compressedLayers,
             int stride,
-            long geometrySignature
+            long geometrySignature,
+            int opaqueVertexCount,
+            int sectionX,
+            int sectionY,
+            int sectionZ
     ) {
+        if (isSinglePlaneDebugEnabled()) {
+            return createDebugPlane(geometrySignature);
+        }
+
         int vertexCount = 0;
         for (ByteBuffer compressedLayer : compressedLayers) {
             ByteBuffer source = compressedLayer.duplicate();
@@ -591,10 +960,17 @@ public final class RayTracingManager {
         }
 
         int primitiveCount = vertexCount / 2;
+        if (opaqueVertexCount < 0 || opaqueVertexCount > vertexCount || (opaqueVertexCount & 3) != 0) {
+            throw new IllegalArgumentException("Invalid opaque RT vertex count: " + opaqueVertexCount);
+        }
         ByteBuffer vertices = MemoryUtil.memAlloc(Math.multiplyExact(vertexCount, Float.BYTES * 3))
                 .order(ByteOrder.nativeOrder());
         ByteBuffer indices = MemoryUtil.memAlloc(Math.multiplyExact(primitiveCount * 3, Integer.BYTES))
                 .order(ByteOrder.nativeOrder());
+        ByteBuffer uvData = MemoryUtil.memAlloc(
+                Math.addExact(Integer.BYTES, Math.multiplyExact(primitiveCount * 3, Integer.BYTES))
+        ).order(ByteOrder.nativeOrder());
+        uvData.putInt(opaqueVertexCount / 2);
 
         int vertexBase = 0;
         for (ByteBuffer compressedLayer : compressedLayers) {
@@ -603,9 +979,9 @@ public final class RayTracingManager {
             int sourceStart = source.position();
             for (int vertex = 0; vertex < layerVertexCount; vertex++) {
                 int offset = sourceStart + vertex * stride;
-                vertices.putFloat(source.getShort(offset) * POSITION_SCALE + POSITION_OFFSET);
-                vertices.putFloat(source.getShort(offset + 2) * POSITION_SCALE + POSITION_OFFSET);
-                vertices.putFloat(source.getShort(offset + 4) * POSITION_SCALE + POSITION_OFFSET);
+                vertices.putFloat(source.getShort(offset) * POSITION_SCALE + POSITION_OFFSET + sectionX);
+                vertices.putFloat(source.getShort(offset + 2) * POSITION_SCALE + POSITION_OFFSET + sectionY);
+                vertices.putFloat(source.getShort(offset + 4) * POSITION_SCALE + POSITION_OFFSET + sectionZ);
             }
 
             for (int vertex = 0; vertex < layerVertexCount; vertex += 4) {
@@ -616,29 +992,73 @@ public final class RayTracingManager {
                 indices.putInt(base);
                 indices.putInt(base + 2);
                 indices.putInt(base + 3);
+
+                int uv0 = packedUv(source, sourceStart + vertex * stride);
+                int uv1 = packedUv(source, sourceStart + (vertex + 1) * stride);
+                int uv2 = packedUv(source, sourceStart + (vertex + 2) * stride);
+                int uv3 = packedUv(source, sourceStart + (vertex + 3) * stride);
+                uvData.putInt(uv0).putInt(uv1).putInt(uv2);
+                uvData.putInt(uv0).putInt(uv2).putInt(uv3);
             }
             vertexBase += layerVertexCount;
         }
 
         vertices.flip();
         indices.flip();
-        return new PendingGeometry(vertices, indices, vertexCount, primitiveCount, geometrySignature);
+        uvData.flip();
+        return new PendingGeometry(
+                vertices,
+                indices,
+                uvData,
+                vertexCount,
+                primitiveCount,
+                opaqueVertexCount / 2,
+                geometrySignature
+        );
+    }
+
+    private static int packedUv(ByteBuffer source, int vertexOffset) {
+        int u = Short.toUnsignedInt(source.getShort(vertexOffset + 12));
+        int v = Short.toUnsignedInt(source.getShort(vertexOffset + 14));
+        return u | (v << 16);
+    }
+
+    private static boolean isSinglePlaneDebugEnabled() {
+        return Boolean.parseBoolean(System.getProperty("vulkanmod.rayTracing.debugPlane", "false"));
+    }
+
+    private static PendingGeometry createDebugPlane(long geometrySignature) {
+        ByteBuffer vertices = MemoryUtil.memAlloc(3 * Float.BYTES * 3).order(ByteOrder.nativeOrder());
+        vertices.putFloat(0.0f).putFloat(0.0f).putFloat(0.0f);
+        vertices.putFloat(16.0f).putFloat(0.0f).putFloat(0.0f);
+        vertices.putFloat(0.0f).putFloat(0.0f).putFloat(16.0f);
+        vertices.flip();
+
+        ByteBuffer indices = MemoryUtil.memAlloc(Integer.BYTES).order(ByteOrder.nativeOrder());
+        indices.putInt(0);
+        indices.flip();
+        ByteBuffer uvData = MemoryUtil.memAlloc(Integer.BYTES).order(ByteOrder.nativeOrder());
+        uvData.putInt(1).flip();
+        return new PendingGeometry(vertices, indices, uvData, 3, 1, 1, geometrySignature);
     }
 
     private record PendingGeometry(
             ByteBuffer vertices,
               ByteBuffer indices,
+              ByteBuffer uvData,
               int vertexCount,
               int primitiveCount,
+              int opaquePrimitiveCount,
               long signature
     ) {
         void free() {
             MemoryUtil.memFree(this.vertices);
             MemoryUtil.memFree(this.indices);
+            MemoryUtil.memFree(this.uvData);
         }
     }
 
-    private static final class AccelerationStructure {
+    private final class AccelerationStructure {
         private final long handle;
         private final long deviceAddress;
         private final RayTracingBuffer storage;
@@ -646,6 +1066,9 @@ public final class RayTracingManager {
           private int sectionY;
           private int sectionZ;
           private long geometrySignature;
+          private int uvBaseEntry;
+          private int uvAllocationOffset = -1;
+          private int uvAllocationSize;
 
         private AccelerationStructure(long handle, long deviceAddress, RayTracingBuffer storage) {
             this.handle = handle;
@@ -656,6 +1079,9 @@ public final class RayTracingManager {
         private void destroy() {
             vkDestroyAccelerationStructureKHR(Vulkan.getVkDevice(), this.handle, null);
             this.storage.freeBuffer();
+            freeUvRange(this.uvAllocationOffset, this.uvAllocationSize);
+            this.uvAllocationOffset = -1;
+            this.uvAllocationSize = 0;
         }
     }
 }

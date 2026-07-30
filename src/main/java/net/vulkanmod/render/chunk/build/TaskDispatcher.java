@@ -26,7 +26,8 @@ public class TaskDispatcher {
     private static final int MAX_PENDING_COMPILE_RESULTS = 128;
     private static final TerrainRenderType[] RT_TERRAIN_LAYERS = {
             TerrainRenderType.SOLID,
-            TerrainRenderType.CUTOUT_MIPPED
+            TerrainRenderType.CUTOUT_MIPPED,
+            TerrainRenderType.CUTOUT
     };
     private static boolean loggedFirstFullChunkUpdate;
     private final Queue<CompileResult> compileResults = Queues.newLinkedBlockingDeque();
@@ -228,15 +229,22 @@ public class TaskDispatcher {
             }
 
             List<ByteBuffer> rayTracingLayers = new ArrayList<>(RT_TERRAIN_LAYERS.length);
+            int opaqueVertexCount = 0;
             for (TerrainRenderType renderType : RT_TERRAIN_LAYERS) {
                 UploadBuffer uploadBuffer = renderLayers.get(renderType);
                 if (uploadBuffer != null && !uploadBuffer.indexOnly && uploadBuffer.getVertexBuffer() != null) {
-                    rayTracingLayers.add(uploadBuffer.getVertexBuffer());
+                    ByteBuffer vertexBuffer = uploadBuffer.getVertexBuffer();
+                    rayTracingLayers.add(vertexBuffer);
+                    if (renderType == TerrainRenderType.SOLID) {
+                        opaqueVertexCount += vertexBuffer.remaining()
+                                / PipelineManager.TERRAIN_VERTEX_FORMAT.getVertexSize();
+                    }
                 }
             }
             RayTracingManager.queueTerrainSection(
                     section,
                     rayTracingLayers,
+                    opaqueVertexCount,
                     PipelineManager.TERRAIN_VERTEX_FORMAT.getVertexSize()
             );
 
