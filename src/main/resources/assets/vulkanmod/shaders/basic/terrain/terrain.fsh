@@ -14,6 +14,7 @@ layout(binding = 1) uniform UBO {
     float ShadowDistance;
     int RtDirectLighting;
     int RtViewMode;
+    int RtDebugView;
     float SunLightStrength;
     float SkyLightStrength;
     float BlockLightStrength;
@@ -24,6 +25,8 @@ layout(binding = 1) uniform UBO {
     float FogStart;
     float FogEnd;
     float AlphaCutout;
+    int RtDynamicLightShadows;
+    float RtDynamicLightStrength;
 };
 
 layout(location = 0) in float vertexDistance;

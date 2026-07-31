@@ -39,7 +39,8 @@ public abstract class PipelineManager {
 
     public static void setDefaultShader() {
         setShaderGetter(renderType -> {
-            if (Initializer.CONFIG.rayTracingViewMode == 2) {
+            if (Initializer.CONFIG.rayTracingViewMode == 2
+                    && Initializer.CONFIG.rayTracingDebugView == 0) {
                 return terrainShader;
             }
             boolean tracedLayer = renderType == TerrainRenderType.SOLID
@@ -47,7 +48,8 @@ public abstract class PipelineManager {
                     || renderType == TerrainRenderType.CUTOUT
                     || (renderType == TerrainRenderType.TRANSLUCENT
                         && (Initializer.CONFIG.rayTracingWaterReflections
-                            || Initializer.CONFIG.rayTracingViewMode == 1));
+                            || Initializer.CONFIG.rayTracingViewMode == 1
+                            || Initializer.CONFIG.rayTracingDebugView != 0));
             if (tracedLayer && terrainShaderRt != null && RayTracingManager.getTopLevelHandle() != 0) {
                 if (!loggedRayQueryPipeline) {
                     loggedRayQueryPipeline = true;
@@ -93,6 +95,7 @@ public abstract class PipelineManager {
         if (rayQuery) {
             pipelineBuilder.setAccelerationStructure(4, VK_SHADER_STAGE_FRAGMENT_BIT);
             pipelineBuilder.setStorageBuffer(5, VK_SHADER_STAGE_FRAGMENT_BIT);
+            pipelineBuilder.setDynamicLightBuffer(6, VK_SHADER_STAGE_FRAGMENT_BIT);
         }
 
         SPIRVUtils.SPIRV vertShaderSPIRV = compileShaderAbsoluteFile(String.format("%s%s.vsh", shaderPath, pathV), SPIRVUtils.ShaderKind.VERTEX_SHADER);

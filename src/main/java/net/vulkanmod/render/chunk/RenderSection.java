@@ -18,6 +18,7 @@ import net.vulkanmod.render.chunk.graph.GraphDirections;
 import net.vulkanmod.render.chunk.util.Util;
 import net.vulkanmod.render.vertex.TerrainRenderType;
 import net.vulkanmod.vulkan.raytracing.RayTracingManager;
+import net.vulkanmod.vulkan.raytracing.RtDynamicLights;
 
 import java.util.Collection;
 import java.util.Map;
@@ -382,6 +383,7 @@ public class RenderSection {
 
     private void reset() {
         RayTracingManager.removeSection(this);
+        RtDynamicLights.removeSection(this);
         this.clearGlobalBlockEntities();
         this.cancelTasks();
         this.compileStatus.compiledSection = CompiledSection.UNCOMPILED;

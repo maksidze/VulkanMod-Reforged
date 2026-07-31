@@ -42,6 +42,8 @@ public class Uniforms {
         });
         vec1i_uniformMap.put("RtDirectLighting", () -> Initializer.CONFIG.rayTracingDirectLighting ? 1 : 0);
         vec1i_uniformMap.put("RtViewMode", () -> Math.max(0, Math.min(2, Initializer.CONFIG.rayTracingViewMode)));
+        vec1i_uniformMap.put("RtDebugView", () -> Math.max(0, Math.min(9, Initializer.CONFIG.rayTracingDebugView)));
+        vec1i_uniformMap.put("RtDynamicLightShadows", () -> Initializer.CONFIG.rayTracingDynamicLightShadows ? 1 : 0);
         vec1i_uniformMap.put("TerrainLayer", () -> VRenderSystem.terrainLayer);
         vec1i_uniformMap.put("WaterReflections", () -> Initializer.CONFIG.rayTracingWaterReflections ? 1 : 0);
 
@@ -73,6 +75,10 @@ public class Uniforms {
         vec1f_uniformMap.put("BlockLightStrength", () -> Math.max(
                 0.0F,
                 Math.min(2.0F, Initializer.CONFIG.rayTracingBlockLight / 100.0F)
+        ));
+        vec1f_uniformMap.put("RtDynamicLightStrength", () -> Math.max(
+                0.0F,
+                Math.min(2.0F, Initializer.CONFIG.rayTracingDynamicLightStrength / 100.0F)
         ));
         vec1f_uniformMap.put("WaterReflectionStrength", () -> Math.max(
                 0.0F,

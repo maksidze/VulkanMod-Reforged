@@ -425,6 +425,33 @@ public abstract class Options {
                 .setTooltip(Component.translatable("vulkanmod.options.rayTracing.viewMode.tooltip"))
                 .setActivationFn(DeviceManager::isRayQueryEnabled);
 
+        CyclingOption<Integer> debugView = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.debugView"),
+                new Integer[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+                value -> {
+                    config.rayTracingDebugView = sanitizeRtDebugView(value);
+                    if (minecraft.levelRenderer != null) {
+                        minecraft.levelRenderer.allChanged();
+                    }
+                },
+                () -> sanitizeRtDebugView(config.rayTracingDebugView)
+        );
+        debugView
+                .setTranslator(value -> Component.translatable(switch (value) {
+                    case 1 -> "vulkanmod.options.rayTracing.debugView.normals";
+                    case 2 -> "vulkanmod.options.rayTracing.debugView.materials";
+                    case 3 -> "vulkanmod.options.rayTracing.debugView.skyLight";
+                    case 4 -> "vulkanmod.options.rayTracing.debugView.blockLight";
+                    case 5 -> "vulkanmod.options.rayTracing.debugView.emission";
+                    case 6 -> "vulkanmod.options.rayTracing.debugView.shadowVisibility";
+                    case 7 -> "vulkanmod.options.rayTracing.debugView.alphaCutout";
+                    case 8 -> "vulkanmod.options.rayTracing.debugView.reflectionDistance";
+                    case 9 -> "vulkanmod.options.rayTracing.debugView.dynamicLights";
+                    default -> "options.off";
+                }))
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.debugView.tooltip"))
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
         CyclingOption<Integer> shadowRays = new CyclingOption<>(
                 Component.translatable("vulkanmod.options.rayTracing.shadowRays"),
                 new Integer[]{1, 2, 4, 8},
@@ -546,6 +573,70 @@ public abstract class Options {
             blockLight.updateActiveState();
         });
 
+        SwitchOption dynamicLights = new SwitchOption(
+                Component.translatable("vulkanmod.options.rayTracing.dynamicLights"),
+                value -> config.rayTracingDynamicLights = value,
+                () -> config.rayTracingDynamicLights
+        );
+        dynamicLights
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.dynamicLights.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
+        CyclingOption<Integer> dynamicLightCount = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.dynamicLightCount"),
+                new Integer[]{1, 2, 4, 16, 32, 64, 128, 256, 512, 0},
+                value -> config.rayTracingDynamicLightCount = sanitizeDynamicLightCount(value),
+                () -> sanitizeDynamicLightCount(config.rayTracingDynamicLightCount)
+        );
+        dynamicLightCount
+                .setTranslator(value -> value == 0
+                        ? Component.translatable("vulkanmod.options.rayTracing.dynamicLightCount.unlimited")
+                        : Component.literal(value.toString()))
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.dynamicLightCount.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && dynamicLights.getNewValue());
+
+        RangeOption dynamicLightDistance = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.dynamicLightDistance"),
+                8, 256, 8,
+                value -> Component.literal(value + " blocks"),
+                value -> config.rayTracingDynamicLightDistance = Math.max(8, Math.min(256, value)),
+                () -> Math.max(8, Math.min(256, config.rayTracingDynamicLightDistance))
+        );
+        dynamicLightDistance
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.dynamicLightDistance.tooltip"))
+                .setImpact(PerformanceImpact.MEDIUM)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && dynamicLights.getNewValue());
+
+        SwitchOption dynamicLightShadows = new SwitchOption(
+                Component.translatable("vulkanmod.options.rayTracing.dynamicLightShadows"),
+                value -> config.rayTracingDynamicLightShadows = value,
+                () -> config.rayTracingDynamicLightShadows
+        );
+        dynamicLightShadows
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.dynamicLightShadows.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && dynamicLights.getNewValue());
+
+        RangeOption dynamicLightStrength = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.dynamicLightStrength"),
+                0, 200, 10,
+                value -> Component.literal(value + "%"),
+                value -> config.rayTracingDynamicLightStrength = Math.max(0, Math.min(200, value)),
+                () -> Math.max(0, Math.min(200, config.rayTracingDynamicLightStrength))
+        );
+        dynamicLightStrength
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.dynamicLightStrength.tooltip"))
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && dynamicLights.getNewValue());
+
+        dynamicLights.setOnChange(() -> {
+            dynamicLightCount.updateActiveState();
+            dynamicLightDistance.updateActiveState();
+            dynamicLightShadows.updateActiveState();
+            dynamicLightStrength.updateActiveState();
+        });
+
         SwitchOption waterReflections = new SwitchOption(
                 Component.translatable("vulkanmod.options.rayTracing.waterReflections"),
                 value -> config.rayTracingWaterReflections = value,
@@ -587,6 +678,7 @@ public abstract class Options {
         return new OptionBlock[]{
                 new OptionBlock("", new Option<?>[]{
                         viewMode,
+                        debugView,
                         shadowRays,
                         shadowSoftness,
                         shadowDarkness,
@@ -595,6 +687,11 @@ public abstract class Options {
                         sunLight,
                         skyLight,
                         blockLight,
+                        dynamicLights,
+                        dynamicLightCount,
+                        dynamicLightDistance,
+                        dynamicLightShadows,
+                        dynamicLightStrength,
                         waterReflections,
                         waterReflectionStrength,
                         waterReflectionDistance
@@ -611,6 +708,23 @@ public abstract class Options {
 
     private static int sanitizeRtViewMode(int value) {
         return Math.max(0, Math.min(2, value));
+    }
+
+    private static int sanitizeRtDebugView(int value) {
+        return Math.max(0, Math.min(9, value));
+    }
+
+    private static int sanitizeDynamicLightCount(int value) {
+        if (value <= 0) return 0;
+        if (value <= 1) return 1;
+        if (value <= 2) return 2;
+        if (value <= 4) return 4;
+        if (value <= 16) return 16;
+        if (value <= 32) return 32;
+        if (value <= 64) return 64;
+        if (value <= 128) return 128;
+        if (value <= 256) return 256;
+        return 512;
     }
 
     public static OptionBlock[] getOtherOpts() {

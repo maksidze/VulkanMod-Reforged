@@ -13,6 +13,7 @@ import net.vulkanmod.vulkan.framebuffer.RenderPass;
 import net.vulkanmod.vulkan.memory.MemoryManager;
 import net.vulkanmod.vulkan.memory.UniformBuffer;
 import net.vulkanmod.vulkan.raytracing.RayTracingManager;
+import net.vulkanmod.vulkan.raytracing.RtDynamicLights;
 import net.vulkanmod.vulkan.shader.SPIRVUtils.SPIRV;
 import net.vulkanmod.vulkan.shader.SPIRVUtils.ShaderKind;
 import net.vulkanmod.vulkan.shader.descriptor.ImageDescriptor;
@@ -140,6 +141,8 @@ public abstract class Pipeline {
     protected int accelerationStructureStages;
     protected int storageBufferBinding = -1;
     protected int storageBufferStages;
+    protected int dynamicLightBufferBinding = -1;
+    protected int dynamicLightBufferStages;
     protected PushConstants pushConstants;
 
     public List<UBO> getBuffers() {
@@ -154,7 +157,8 @@ public abstract class Pipeline {
         try (MemoryStack stack = stackPush()) {
             int bindingsSize = this.buffers.size() + imageDescriptors.size()
                     + (this.accelerationStructureBinding >= 0 ? 1 : 0)
-                    + (this.storageBufferBinding >= 0 ? 1 : 0);
+                    + (this.storageBufferBinding >= 0 ? 1 : 0)
+                    + (this.dynamicLightBufferBinding >= 0 ? 1 : 0);
 
             VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(bindingsSize, stack);
 
@@ -192,6 +196,15 @@ public abstract class Pipeline {
                 storageBinding.descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
                 storageBinding.pImmutableSamplers(null);
                 storageBinding.stageFlags(this.storageBufferStages);
+            }
+
+            if (this.dynamicLightBufferBinding >= 0) {
+                VkDescriptorSetLayoutBinding dynamicLightBinding = bindings.get(this.dynamicLightBufferBinding);
+                dynamicLightBinding.binding(this.dynamicLightBufferBinding);
+                dynamicLightBinding.descriptorCount(1);
+                dynamicLightBinding.descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                dynamicLightBinding.pImmutableSamplers(null);
+                dynamicLightBinding.stageFlags(this.dynamicLightBufferStages);
             }
 
             VkDescriptorSetLayoutCreateInfo layoutInfo = VkDescriptorSetLayoutCreateInfo.calloc(stack);
@@ -319,6 +332,7 @@ public abstract class Pipeline {
           private final IntBuffer dynamicOffsets;
           private long boundAccelerationStructure;
           private long boundStorageBuffer;
+          private long boundDynamicLightBuffer;
 
         DescriptorSets(Pipeline pipeline) {
             this.pipeline = pipeline;
@@ -406,6 +420,11 @@ public abstract class Pipeline {
                   return true;
               }
 
+              if (pipeline.dynamicLightBufferBinding >= 0
+                      && this.boundDynamicLightBuffer != RtDynamicLights.getBufferHandle()) {
+                  return true;
+              }
+
               return false;
         }
 
@@ -433,7 +452,8 @@ public abstract class Pipeline {
 
             int descriptorWriteCount = pipeline.buffers.size() + pipeline.imageDescriptors.size()
                     + (pipeline.accelerationStructureBinding >= 0 ? 1 : 0)
-                    + (pipeline.storageBufferBinding >= 0 ? 1 : 0);
+                    + (pipeline.storageBufferBinding >= 0 ? 1 : 0)
+                    + (pipeline.dynamicLightBufferBinding >= 0 ? 1 : 0);
             VkWriteDescriptorSet.Buffer descriptorWrites = VkWriteDescriptorSet.calloc(descriptorWriteCount, stack);
             VkDescriptorBufferInfo.Buffer[] bufferInfos = new VkDescriptorBufferInfo.Buffer[pipeline.buffers.size()];
 
@@ -547,6 +567,30 @@ public abstract class Pipeline {
                   storageWrite.dstSet(currentSet);
 
                   this.boundStorageBuffer = uvBufferHandle;
+                  ++i;
+              }
+
+              if (pipeline.dynamicLightBufferBinding >= 0) {
+                  long dynamicLightBufferHandle = RtDynamicLights.getBufferHandle();
+                  if (dynamicLightBufferHandle == VK_NULL_HANDLE) {
+                      throw new IllegalStateException("RT terrain pipeline bound without dynamic-light storage");
+                  }
+
+                  VkDescriptorBufferInfo.Buffer dynamicLightInfo = VkDescriptorBufferInfo.calloc(1, stack);
+                  dynamicLightInfo.buffer(dynamicLightBufferHandle);
+                  dynamicLightInfo.offset(0L);
+                  dynamicLightInfo.range(RtDynamicLights.getBufferSize());
+
+                  VkWriteDescriptorSet dynamicLightWrite = descriptorWrites.get(i);
+                  dynamicLightWrite.sType$Default();
+                  dynamicLightWrite.dstBinding(pipeline.dynamicLightBufferBinding);
+                  dynamicLightWrite.dstArrayElement(0);
+                  dynamicLightWrite.descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                  dynamicLightWrite.descriptorCount(1);
+                  dynamicLightWrite.pBufferInfo(dynamicLightInfo);
+                  dynamicLightWrite.dstSet(currentSet);
+
+                  this.boundDynamicLightBuffer = dynamicLightBufferHandle;
               }
 
               vkUpdateDescriptorSets(DEVICE, descriptorWrites, null);
@@ -575,7 +619,8 @@ public abstract class Pipeline {
         private void createDescriptorPool(MemoryStack stack) {
             int size = pipeline.buffers.size() + pipeline.imageDescriptors.size()
                     + (pipeline.accelerationStructureBinding >= 0 ? 1 : 0)
-                    + (pipeline.storageBufferBinding >= 0 ? 1 : 0);
+                    + (pipeline.storageBufferBinding >= 0 ? 1 : 0)
+                    + (pipeline.dynamicLightBufferBinding >= 0 ? 1 : 0);
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(size, stack);
 
@@ -604,6 +649,13 @@ public abstract class Pipeline {
                 VkDescriptorPoolSize storagePoolSize = poolSizes.get(i);
                 storagePoolSize.type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
                 storagePoolSize.descriptorCount(this.poolSize);
+                ++i;
+            }
+
+            if (pipeline.dynamicLightBufferBinding >= 0) {
+                VkDescriptorPoolSize dynamicLightPoolSize = poolSizes.get(i);
+                dynamicLightPoolSize.type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                dynamicLightPoolSize.descriptorCount(this.poolSize);
             }
 
             VkDescriptorPoolCreateInfo poolInfo = VkDescriptorPoolCreateInfo.calloc(stack);
@@ -660,6 +712,8 @@ public abstract class Pipeline {
           int accelerationStructureStages;
           int storageBufferBinding = -1;
           int storageBufferStages;
+          int dynamicLightBufferBinding = -1;
+          int dynamicLightBufferStages;
 
         SPIRV vertShaderSPIRV;
         SPIRV fragShaderSPIRV;
@@ -707,6 +761,14 @@ public abstract class Pipeline {
           public void setStorageBuffer(int binding, int stages) {
               this.storageBufferBinding = binding;
               this.storageBufferStages = stages;
+              if (binding >= this.nextBinding) {
+                  this.nextBinding = binding + 1;
+              }
+          }
+
+          public void setDynamicLightBuffer(int binding, int stages) {
+              this.dynamicLightBufferBinding = binding;
+              this.dynamicLightBufferStages = stages;
               if (binding >= this.nextBinding) {
                   this.nextBinding = binding + 1;
               }

@@ -18,6 +18,7 @@ import net.minecraft.world.phys.Vec3;
 import net.vulkanmod.render.chunk.TerrainRenderState;
 import net.vulkanmod.render.chunk.WorldRenderer;
 import net.vulkanmod.vulkan.VRenderSystem;
+import net.vulkanmod.vulkan.raytracing.RtDynamicLights;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.*;
 import org.spongepowered.asm.mixin.injection.At;
@@ -72,6 +73,7 @@ public abstract class LevelRendererMixin {
             // This matches the Y(-90) * X(sunAngle) transform used by LevelRenderer
             // for the vanilla sun quad. The vector points from the world to the sun.
             VRenderSystem.setSunDirection(-Mth.sin(sunAngle), Mth.cos(sunAngle), 0.0F);
+            RtDynamicLights.update(level, camera, partialTick);
         }
         prepareWorldPassRenderState();
     }

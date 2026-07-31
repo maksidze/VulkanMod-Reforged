@@ -35,6 +35,7 @@ public class Config {
     public int ambientOcclusion = 1;
     public boolean textureAnimations = true;
     public int rayTracingViewMode = 0;
+    public int rayTracingDebugView = 0;
     public int rayTracingShadowRays = 4;
     public int rayTracingShadowSoftness = 25;
     public int rayTracingShadowDarkness = 62;
@@ -43,6 +44,11 @@ public class Config {
     public int rayTracingSunLight = 100;
     public int rayTracingSkyLight = 100;
     public int rayTracingBlockLight = 100;
+    public boolean rayTracingDynamicLights = true;
+    public int rayTracingDynamicLightCount = 2;
+    public int rayTracingDynamicLightDistance = 20;
+    public boolean rayTracingDynamicLightShadows = true;
+    public int rayTracingDynamicLightStrength = 100;
     public boolean rayTracingWaterReflections = true;
     public int rayTracingWaterReflectionStrength = 70;
     public int rayTracingWaterReflectionDistance = 128;

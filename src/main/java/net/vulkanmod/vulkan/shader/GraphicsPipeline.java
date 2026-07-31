@@ -40,6 +40,8 @@ public class GraphicsPipeline extends Pipeline {
         this.accelerationStructureStages = builder.accelerationStructureStages;
         this.storageBufferBinding = builder.storageBufferBinding;
         this.storageBufferStages = builder.storageBufferStages;
+        this.dynamicLightBufferBinding = builder.dynamicLightBufferBinding;
+        this.dynamicLightBufferStages = builder.dynamicLightBufferStages;
         this.pushConstants = builder.pushConstants;
         this.vertexFormat = builder.vertexFormat;
 

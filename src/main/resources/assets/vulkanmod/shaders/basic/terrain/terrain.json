@@ -35,6 +35,7 @@
             { "name": "ShadowDistance", "type": "float", "count": 1, "values": [ 256.0 ] },
             { "name": "RtDirectLighting", "type": "int", "count": 1, "values": [ 1 ] },
             { "name": "RtViewMode", "type": "int", "count": 1, "values": [ 0 ] },
+            { "name": "RtDebugView", "type": "int", "count": 1, "values": [ 0 ] },
             { "name": "SunLightStrength", "type": "float", "count": 1, "values": [ 1.0 ] },
             { "name": "SkyLightStrength", "type": "float", "count": 1, "values": [ 1.0 ] },
             { "name": "BlockLightStrength", "type": "float", "count": 1, "values": [ 1.0 ] },
@@ -44,7 +45,9 @@
             { "name": "WaterReflectionDistance", "type": "float", "count": 1, "values": [ 128.0 ] },
             { "name": "FogStart", "type": "float", "count": 1, "values": [ 0.0 ] },
             { "name": "FogEnd", "type": "float", "count": 1, "values": [ 1.0 ] },
-            { "name": "AlphaCutout", "type": "float", "count": 1, "values": [ 1.0 ] }
+            { "name": "AlphaCutout", "type": "float", "count": 1, "values": [ 1.0 ] },
+            { "name": "RtDynamicLightShadows", "type": "int", "count": 1, "values": [ 1 ] },
+            { "name": "RtDynamicLightStrength", "type": "float", "count": 1, "values": [ 1.0 ] }
         ] }
     ],
     "PushConstants": [

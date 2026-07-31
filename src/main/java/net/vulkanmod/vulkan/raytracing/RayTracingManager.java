@@ -243,6 +243,7 @@ public final class RayTracingManager {
             INSTANCE.cleanUp();
             INSTANCE = null;
         }
+        RtDynamicLights.cleanUp();
     }
 
     private void processPendingBuildsInternal() {

@@ -27,6 +27,7 @@ import net.vulkanmod.render.chunk.build.thread.ThreadBuilderPack;
 import net.vulkanmod.render.vertex.TerrainBufferBuilder;
 import net.vulkanmod.render.vertex.TerrainRenderType;
 import net.vulkanmod.vulkan.raytracing.RayTracingManager;
+import net.vulkanmod.vulkan.raytracing.RtDynamicLights;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector3f;
 
@@ -116,6 +117,11 @@ public class BuildTask extends ChunkTask {
                     blockPos.set(section.xOffset() + x, section.yOffset() + y, section.zOffset() + z);
 
                     BlockState blockState = this.region.getBlockState(blockPos);
+                    RtDynamicLights.SourceLight dynamicLight =
+                            RtDynamicLights.createBlockLight(blockState, blockPos);
+                    if (dynamicLight != null) {
+                        compileResult.dynamicLights.add(dynamicLight);
+                    }
                     if (blockState.isSolidRender(this.region, blockPos)) {
                         visGraph.setOpaque(blockPos);
                     }

@@ -8,6 +8,7 @@ import net.vulkanmod.render.chunk.RenderSection;
 import net.vulkanmod.render.chunk.build.UploadBuffer;
 import net.vulkanmod.render.vertex.QuadSorter;
 import net.vulkanmod.render.vertex.TerrainRenderType;
+import net.vulkanmod.vulkan.raytracing.RtDynamicLights;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -23,6 +24,7 @@ public class CompileResult {
 
     final List<BlockEntity> globalBlockEntities = new ArrayList<>();
     final List<BlockEntity> blockEntities = new ArrayList<>();
+    final List<RtDynamicLights.SourceLight> dynamicLights = new ArrayList<>();
     public final EnumMap<TerrainRenderType, UploadBuffer> renderedLayers = new EnumMap<>(TerrainRenderType.class);
 
     VisibilitySet visibilitySet;
@@ -56,5 +58,6 @@ public class CompileResult {
         this.renderSection.setVisibility(((VisibilitySetExtended)visibilitySet).getVisibility());
         this.renderSection.setCompletelyEmpty(compiledSection.isCompletelyEmpty);
         this.renderSection.setContainsBlockEntities(!blockEntities.isEmpty());
+        RtDynamicLights.updateSectionLights(this.renderSection, this.dynamicLights);
     }
 }
