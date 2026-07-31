@@ -16,6 +16,8 @@ import net.vulkanmod.vulkan.framebuffer.Framebuffer;
 import net.vulkanmod.vulkan.framebuffer.RenderPass;
 import net.vulkanmod.vulkan.memory.MemoryManager;
 import net.vulkanmod.vulkan.raytracing.RayTracingManager;
+import net.vulkanmod.vulkan.raytracing.RtGpuProfiler;
+import net.vulkanmod.vulkan.raytracing.RtTemporalResources;
 import net.vulkanmod.vulkan.pass.DefaultMainPass;
 import net.vulkanmod.vulkan.pass.MainPass;
 import net.vulkanmod.vulkan.shader.GraphicsPipeline;
@@ -137,6 +139,7 @@ public class Renderer {
         PipelineManager.init();
         UploadManager.createInstance();
         RayTracingManager.createInstance();
+        RtGpuProfiler.create(framesNum);
 
         allocateCommandBuffers();
         createSyncObjects();
@@ -269,6 +272,14 @@ public class Renderer {
         }
 
         recordingCmds = true;
+        RtGpuProfiler.beginFrame(commandBuffer, currentFrame);
+        if (RayTracingManager.shouldEnableRayQueryPass()) {
+            RtTemporalResources.beginFrame(
+                    commandBuffer,
+                    Vulkan.getSwapChain().getWidth(),
+                    Vulkan.getSwapChain().getHeight()
+            );
+        }
         mainPass.begin(commandBuffer, stack);
 
         resetDynamicState(commandBuffer);
@@ -495,6 +506,7 @@ public class Renderer {
             Pipeline.recreateDescriptorSets(framesNum);
 
             drawer.createResources(framesNum);
+            RtGpuProfiler.recreate(framesNum);
         }
 
         createSyncObjects();
@@ -508,6 +520,8 @@ public class Renderer {
     public void cleanUpResources() {
         destroySyncObjects();
 
+        RtGpuProfiler.cleanUp();
+        RtTemporalResources.cleanUp();
         RayTracingManager.destroyInstance();
 
         drawer.cleanUpResources();

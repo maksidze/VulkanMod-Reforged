@@ -47,11 +47,19 @@ public class Config {
     public boolean rayTracingDynamicLights = true;
     public int rayTracingDynamicLightCount = 2;
     public int rayTracingDynamicLightDistance = 20;
+    public int rayTracingDynamicMaxLightsPerPixel = 16;
     public boolean rayTracingDynamicLightShadows = true;
+    public int rayTracingDynamicShadowMaxLights = 4;
+    public int rayTracingDynamicShadowDistance = 32;
     public int rayTracingDynamicLightStrength = 100;
     public boolean rayTracingWaterReflections = true;
     public int rayTracingWaterReflectionStrength = 70;
     public int rayTracingWaterReflectionDistance = 128;
+    public boolean rayTracingSkyOcclusion = true;
+    public int rayTracingSkyRays = 1;
+    public int rayTracingSkyDistance = 64;
+    public int rayTracingTemporalFrames = 16;
+    public int rayTracingSkyDenoiser = 1;
 
     public void write() {
 

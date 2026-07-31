@@ -632,10 +632,10 @@ public abstract class Pipeline {
                 uniformBufferPoolSize.descriptorCount(this.poolSize);
             }
 
-            for (; i < pipeline.buffers.size() + pipeline.imageDescriptors.size(); ++i) {
-                VkDescriptorPoolSize textureSamplerPoolSize = poolSizes.get(i);
-                textureSamplerPoolSize.type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-                textureSamplerPoolSize.descriptorCount(this.poolSize);
+            for (int imageIndex = 0; imageIndex < pipeline.imageDescriptors.size(); ++imageIndex, ++i) {
+                VkDescriptorPoolSize imagePoolSize = poolSizes.get(i);
+                imagePoolSize.type(pipeline.imageDescriptors.get(imageIndex).getType());
+                imagePoolSize.descriptorCount(this.poolSize);
             }
 
             if (pipeline.accelerationStructureBinding >= 0) {
@@ -769,6 +769,19 @@ public abstract class Pipeline {
           public void setDynamicLightBuffer(int binding, int stages) {
               this.dynamicLightBufferBinding = binding;
               this.dynamicLightBufferStages = stages;
+              if (binding >= this.nextBinding) {
+                  this.nextBinding = binding + 1;
+              }
+          }
+
+          public void addStorageImage(int binding, int imageIdx) {
+              this.imageDescriptors.add(new ImageDescriptor(
+                      binding,
+                      "image2D",
+                      "RtStorageImage" + binding,
+                      imageIdx,
+                      true
+              ));
               if (binding >= this.nextBinding) {
                   this.nextBinding = binding + 1;
               }

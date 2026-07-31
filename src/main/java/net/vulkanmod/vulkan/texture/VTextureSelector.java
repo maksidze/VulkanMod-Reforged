@@ -62,6 +62,9 @@ public abstract class VTextureSelector {
         var imageDescriptors = pipeline.getImageDescriptors();
 
         for (ImageDescriptor state : imageDescriptors) {
+            if (state.isStorageImage) {
+                continue;
+            }
             final int shaderTexture = RenderSystem.getShaderTexture(state.imageIdx);
 
             GlTexture texture = GlTexture.getTexture(shaderTexture);

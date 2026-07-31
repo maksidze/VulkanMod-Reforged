@@ -146,6 +146,14 @@ public class Device {
         return vendorId == 0x8086;
     }
 
+    public boolean supportsGraphicsTimestamps() {
+        return properties.limits().timestampComputeAndGraphics();
+    }
+
+    public float timestampPeriod() {
+        return properties.limits().timestampPeriod();
+    }
+
     public void free() {
         this.rayTracingCapabilities.free();
         this.properties.free();

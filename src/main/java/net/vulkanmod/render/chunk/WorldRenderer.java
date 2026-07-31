@@ -42,6 +42,8 @@ import net.vulkanmod.vulkan.memory.IndirectBuffer;
 import net.vulkanmod.vulkan.memory.MemoryTypes;
 import net.vulkanmod.vulkan.shader.GraphicsPipeline;
 import net.vulkanmod.vulkan.raytracing.RayTracingManager;
+import net.vulkanmod.vulkan.raytracing.RtGpuProfiler;
+import net.vulkanmod.vulkan.raytracing.RtTemporalResources;
 import net.vulkanmod.vulkan.texture.VTextureSelector;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
@@ -298,11 +300,20 @@ public class WorldRenderer {
 
           VRenderSystem.applyMVP(modelView, projection);
           VRenderSystem.setCameraPosition((float) camX, (float) camY, (float) camZ);
+          RtTemporalResources.prepareReprojection(camX, camY, camZ);
           VRenderSystem.setPrimitiveTopologyGL(GL11.GL_TRIANGLES);
 
         Renderer renderer = Renderer.getInstance();
         GraphicsPipeline pipeline = PipelineManager.getTerrainShader(terrainRenderType);
         renderer.bindGraphicsPipeline(pipeline);
+        boolean profileRtLayer = PipelineManager.isRayQueryTerrainPipeline(pipeline);
+        if (profileRtLayer) {
+            RtGpuProfiler.beginTerrainLayer(
+                    Renderer.getCommandBuffer(),
+                    terrainRenderType,
+                    Renderer.getCurrentFrame()
+            );
+        }
 
         VTextureSelector.bindShaderTextures(pipeline);
 
@@ -350,6 +361,14 @@ public class WorldRenderer {
             VRenderSystem.setChunkOffset(0, 0, 0);
             VRenderSystem.setWorldOrigin(0, 0, 0);
             renderer.pushConstants(pipeline);
+        }
+
+        if (profileRtLayer) {
+            RtGpuProfiler.endTerrainLayer(
+                    Renderer.getCommandBuffer(),
+                    terrainRenderType,
+                    Renderer.getCurrentFrame()
+            );
         }
 
         this.minecraft.getProfiler().pop();

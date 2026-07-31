@@ -27,6 +27,16 @@ layout(binding = 1) uniform UBO {
     float AlphaCutout;
     int RtDynamicLightShadows;
     float RtDynamicLightStrength;
+    int RtDynamicMaxLightsPerPixel;
+    int RtDynamicShadowMaxLights;
+    float RtDynamicShadowDistance;
+    int RtSkyOcclusion;
+    int RtSkyRays;
+    float RtSkyDistance;
+    int RtTemporalHistoryValid;
+    int RtFrameIndex;
+    float RtTemporalBlend;
+    int RtSkyDenoiser;
 };
 
 layout(location = 0) in float vertexDistance;

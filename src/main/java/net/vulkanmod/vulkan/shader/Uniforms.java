@@ -6,6 +6,7 @@ import net.vulkanmod.compat.external.ExternalRenderPathSupport;
 import net.vulkanmod.compat.external.ExternalTerrainRenderBridge;
 import net.vulkanmod.Initializer;
 import net.vulkanmod.vulkan.VRenderSystem;
+import net.vulkanmod.vulkan.raytracing.RtTemporalResources;
 import net.vulkanmod.vulkan.util.MappedBuffer;
 
 import java.util.function.Supplier;
@@ -26,6 +27,7 @@ public class Uniforms {
         mat4f_uniformMap.put("ModelViewMat", VRenderSystem::getModelViewMatrix);
         mat4f_uniformMap.put("ProjMat", VRenderSystem::getProjectionMatrix);
         mat4f_uniformMap.put("MVP", VRenderSystem::getMVP);
+        mat4f_uniformMap.put("RtPreviousMVP", RtTemporalResources::getPreviousMvp);
         mat4f_uniformMap.put("TextureMat", VRenderSystem::getTextureMatrix);
         if (ExternalRenderPathSupport.isExternalLodBridgeEnabled()) {
             mat4f_uniformMap.put("ExternalLodCombinedMatrix", ExternalTerrainRenderBridge::getCombinedMatrix);
@@ -42,10 +44,31 @@ public class Uniforms {
         });
         vec1i_uniformMap.put("RtDirectLighting", () -> Initializer.CONFIG.rayTracingDirectLighting ? 1 : 0);
         vec1i_uniformMap.put("RtViewMode", () -> Math.max(0, Math.min(2, Initializer.CONFIG.rayTracingViewMode)));
-        vec1i_uniformMap.put("RtDebugView", () -> Math.max(0, Math.min(9, Initializer.CONFIG.rayTracingDebugView)));
+        vec1i_uniformMap.put("RtDebugView", () -> Math.max(0, Math.min(11, Initializer.CONFIG.rayTracingDebugView)));
         vec1i_uniformMap.put("RtDynamicLightShadows", () -> Initializer.CONFIG.rayTracingDynamicLightShadows ? 1 : 0);
+        vec1i_uniformMap.put("RtDynamicMaxLightsPerPixel", () -> Math.max(
+                0,
+                Math.min(128, Initializer.CONFIG.rayTracingDynamicMaxLightsPerPixel)
+        ));
+        vec1i_uniformMap.put("RtDynamicShadowMaxLights", () -> Math.max(
+                0,
+                Math.min(64, Initializer.CONFIG.rayTracingDynamicShadowMaxLights)
+        ));
         vec1i_uniformMap.put("TerrainLayer", () -> VRenderSystem.terrainLayer);
         vec1i_uniformMap.put("WaterReflections", () -> Initializer.CONFIG.rayTracingWaterReflections ? 1 : 0);
+        vec1i_uniformMap.put("RtSkyOcclusion", () -> Initializer.CONFIG.rayTracingSkyOcclusion ? 1 : 0);
+        vec1i_uniformMap.put("RtSkyRays", () -> {
+            int rays = Initializer.CONFIG.rayTracingSkyRays;
+            if (rays <= 1) return 1;
+            if (rays <= 2) return 2;
+            return 4;
+        });
+        vec1i_uniformMap.put("RtTemporalHistoryValid", RtTemporalResources::getHistoryValid);
+        vec1i_uniformMap.put("RtFrameIndex", RtTemporalResources::getFrameIndex);
+        vec1i_uniformMap.put("RtSkyDenoiser", () -> Math.max(
+                0,
+                Math.min(2, Initializer.CONFIG.rayTracingSkyDenoiser)
+        ));
 
         vec1f_uniformMap.put("FogStart", RenderSystem::getShaderFogStart);
         vec1f_uniformMap.put("FogEnd", RenderSystem::getShaderFogEnd);
@@ -60,9 +83,10 @@ public class Uniforms {
                 0.0F,
                 Math.min(1.0F, Initializer.CONFIG.rayTracingShadowDarkness / 100.0F)
         ));
-        vec1f_uniformMap.put("ShadowDistance", () -> (float) Math.max(
+        vec1f_uniformMap.put("ShadowDistance", () -> unlimitedDistance(
+                Initializer.CONFIG.rayTracingShadowDistance,
                 32,
-                Math.min(256, Initializer.CONFIG.rayTracingShadowDistance)
+                512
         ));
         vec1f_uniformMap.put("SunLightStrength", () -> Math.max(
                 0.0F,
@@ -80,14 +104,26 @@ public class Uniforms {
                 0.0F,
                 Math.min(2.0F, Initializer.CONFIG.rayTracingDynamicLightStrength / 100.0F)
         ));
+        vec1f_uniformMap.put("RtDynamicShadowDistance", () -> unlimitedDistance(
+                Initializer.CONFIG.rayTracingDynamicShadowDistance,
+                8,
+                256
+        ));
         vec1f_uniformMap.put("WaterReflectionStrength", () -> Math.max(
                 0.0F,
                 Math.min(1.0F, Initializer.CONFIG.rayTracingWaterReflectionStrength / 100.0F)
         ));
-        vec1f_uniformMap.put("WaterReflectionDistance", () -> (float) Math.max(
+        vec1f_uniformMap.put("WaterReflectionDistance", () -> unlimitedDistance(
+                Initializer.CONFIG.rayTracingWaterReflectionDistance,
                 16,
-                Math.min(256, Initializer.CONFIG.rayTracingWaterReflectionDistance)
+                512
         ));
+        vec1f_uniformMap.put("RtSkyDistance", () -> unlimitedDistance(
+                Initializer.CONFIG.rayTracingSkyDistance,
+                16,
+                256
+        ));
+        vec1f_uniformMap.put("RtTemporalBlend", RtTemporalResources::getHistoryBlend);
 
         vec2f_uniformMap.put("ScreenSize", VRenderSystem::getScreenSize);
 
@@ -96,6 +132,7 @@ public class Uniforms {
         vec3f_uniformMap.put("ChunkOffset", () -> VRenderSystem.ChunkOffset);
         vec3f_uniformMap.put("WorldOrigin", () -> VRenderSystem.WorldOrigin);
         vec3f_uniformMap.put("CameraPosition", () -> VRenderSystem.CameraPosition);
+        vec3f_uniformMap.put("RtPreviousCameraPosition", RtTemporalResources::getPreviousCameraPosition);
         vec3f_uniformMap.put("SunDirection", () -> VRenderSystem.SunDirection);
 
         vec4f_uniformMap.put("ColorModulator", VRenderSystem::getShaderColor);
@@ -105,5 +142,11 @@ public class Uniforms {
             vec4f_uniformMap.put("ExternalLodRenderParams", ExternalTerrainRenderBridge::getRenderParams);
         }
 
+    }
+
+    private static float unlimitedDistance(int configuredDistance, int minimum, int maximum) {
+        return configuredDistance <= 0
+                ? 65536.0F
+                : Math.max(minimum, Math.min(maximum, configuredDistance));
     }
 }

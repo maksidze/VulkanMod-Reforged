@@ -24,7 +24,9 @@
     "UBOs": [
         { "type":  "vertex", "binding": 0, "fields": [
             { "name": "MVP", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
-            { "name": "CameraPosition", "type": "float", "count": 3, "values": [ 0.0, 0.0, 0.0 ] }
+            { "name": "CameraPosition", "type": "float", "count": 3, "values": [ 0.0, 0.0, 0.0 ] },
+            { "name": "RtPreviousMVP", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
+            { "name": "RtPreviousCameraPosition", "type": "float", "count": 3, "values": [ 0.0, 0.0, 0.0 ] }
         ] },
         { "type":  "fragment", "binding": 1, "fields": [
             { "name": "FogColor", "type": "float", "count": 4, "values": [ 0.0, 0.0, 0.0, 0.0 ] },
@@ -47,7 +49,17 @@
             { "name": "FogEnd", "type": "float", "count": 1, "values": [ 1.0 ] },
             { "name": "AlphaCutout", "type": "float", "count": 1, "values": [ 1.0 ] },
             { "name": "RtDynamicLightShadows", "type": "int", "count": 1, "values": [ 1 ] },
-            { "name": "RtDynamicLightStrength", "type": "float", "count": 1, "values": [ 1.0 ] }
+            { "name": "RtDynamicLightStrength", "type": "float", "count": 1, "values": [ 1.0 ] },
+            { "name": "RtDynamicMaxLightsPerPixel", "type": "int", "count": 1, "values": [ 16 ] },
+            { "name": "RtDynamicShadowMaxLights", "type": "int", "count": 1, "values": [ 4 ] },
+            { "name": "RtDynamicShadowDistance", "type": "float", "count": 1, "values": [ 32.0 ] },
+            { "name": "RtSkyOcclusion", "type": "int", "count": 1, "values": [ 1 ] },
+            { "name": "RtSkyRays", "type": "int", "count": 1, "values": [ 1 ] },
+            { "name": "RtSkyDistance", "type": "float", "count": 1, "values": [ 64.0 ] },
+            { "name": "RtTemporalHistoryValid", "type": "int", "count": 1, "values": [ 0 ] },
+            { "name": "RtFrameIndex", "type": "int", "count": 1, "values": [ 0 ] },
+            { "name": "RtTemporalBlend", "type": "float", "count": 1, "values": [ 0.9375 ] },
+            { "name": "RtSkyDenoiser", "type": "int", "count": 1, "values": [ 1 ] }
         ] }
     ],
     "PushConstants": [

@@ -6,6 +6,8 @@
 layout (binding = 0) uniform UniformBufferObject {
     mat4 MVP;
     vec3 CameraPosition;
+    mat4 RtPreviousMVP;
+    vec3 RtPreviousCameraPosition;
 };
 
 layout (push_constant) uniform pushConstant {
@@ -25,6 +27,8 @@ layout (location = 5) out vec2 lightLevels;
 layout (location = 6) out vec3 worldNormal;
 layout (location = 7) out vec3 cameraIncident;
 layout (location = 8) out float rtMaterialAttribute;
+layout (location = 9) out vec4 rtPreviousClipPosition;
+layout (location = 10) out float rtPreviousDistance;
 
 //Compressed Vertex
 layout (location = 0) in ivec4 Position;
@@ -55,6 +59,9 @@ void main() {
     cameraIncident = worldPosition - CameraPosition;
     // The normalized high byte carries a compact 7-bit RT material/emission attribute.
     rtMaterialAttribute = round(max(Normal.w, 0.0) * 127.0);
+    vec3 previousCameraRelativePosition = worldPosition - RtPreviousCameraPosition;
+    rtPreviousClipPosition = RtPreviousMVP * vec4(previousCameraRelativePosition, 1.0);
+    rtPreviousDistance = length(previousCameraRelativePosition);
 }
 
 ////Default Vertex

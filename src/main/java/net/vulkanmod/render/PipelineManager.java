@@ -11,6 +11,7 @@ import net.vulkanmod.vulkan.shader.GraphicsPipeline;
 import net.vulkanmod.vulkan.shader.Pipeline;
 import net.vulkanmod.vulkan.shader.SPIRVUtils;
 import net.vulkanmod.vulkan.raytracing.RayTracingManager;
+import net.vulkanmod.vulkan.raytracing.RtTemporalResources;
 
 import java.util.function.Function;
 
@@ -96,6 +97,9 @@ public abstract class PipelineManager {
             pipelineBuilder.setAccelerationStructure(4, VK_SHADER_STAGE_FRAGMENT_BIT);
             pipelineBuilder.setStorageBuffer(5, VK_SHADER_STAGE_FRAGMENT_BIT);
             pipelineBuilder.setDynamicLightBuffer(6, VK_SHADER_STAGE_FRAGMENT_BIT);
+            pipelineBuilder.addStorageImage(7, RtTemporalResources.CURRENT_IMAGE_SLOT);
+            pipelineBuilder.addStorageImage(8, RtTemporalResources.PREVIOUS_IMAGE_SLOT);
+            pipelineBuilder.addStorageImage(9, RtTemporalResources.DEPTH_OWNER_IMAGE_SLOT);
         }
 
         SPIRVUtils.SPIRV vertShaderSPIRV = compileShaderAbsoluteFile(String.format("%s%s.vsh", shaderPath, pathV), SPIRVUtils.ShaderKind.VERTEX_SHADER);
@@ -107,6 +111,10 @@ public abstract class PipelineManager {
 
     public static GraphicsPipeline getTerrainShader(TerrainRenderType renderType) {
         return shaderGetter.apply(renderType);
+    }
+
+    public static boolean isRayQueryTerrainPipeline(GraphicsPipeline pipeline) {
+        return pipeline != null && pipeline == terrainShaderRt;
     }
 
     public static void setShaderGetter(Function<TerrainRenderType, GraphicsPipeline> consumer) {

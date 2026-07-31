@@ -99,13 +99,15 @@ public final class RtDynamicLights {
         }
 
         Vec3 cameraPosition = camera.getPosition();
-        double searchDistance = Math.max(8, Math.min(256, Initializer.CONFIG.rayTracingDynamicLightDistance));
+        int configuredDistance = Initializer.CONFIG.rayTracingDynamicLightDistance;
+        boolean unlimitedDistance = configuredDistance <= 0;
+        double searchDistance = Math.max(8, Math.min(256, configuredDistance));
         double searchDistanceSquared = searchDistance * searchDistance;
         List<SourceLight> candidates = new ArrayList<>();
 
         for (List<SourceLight> sectionSources : SECTION_LIGHTS.values()) {
             for (SourceLight source : sectionSources) {
-                if (source.distanceSquared(cameraPosition) <= searchDistanceSquared) {
+                if (unlimitedDistance || source.distanceSquared(cameraPosition) <= searchDistanceSquared) {
                     candidates.add(source);
                 }
             }
@@ -113,7 +115,8 @@ public final class RtDynamicLights {
 
         for (Player player : level.players()) {
             SourceLight held = heldLight(player, partialTick);
-            if (held != null && held.distanceSquared(cameraPosition) <= searchDistanceSquared) {
+            if (held != null
+                    && (unlimitedDistance || held.distanceSquared(cameraPosition) <= searchDistanceSquared)) {
                 candidates.add(held);
             }
         }
@@ -220,6 +223,9 @@ public final class RtDynamicLights {
             if (lightIndex >= MAX_BUFFER_LIGHTS) {
                 break;
             }
+            entry.getValue().sort(Comparator.comparingDouble(
+                    (FrameLight light) -> light.stablePriority
+            ).reversed());
             int count = Math.min(
                     Math.min(entry.getValue().size(), MAX_CELL_LIGHTS),
                     MAX_BUFFER_LIGHTS - lightIndex
@@ -426,8 +432,13 @@ public final class RtDynamicLights {
         }
 
         private FrameLight atTime(double time) {
+            float stablePriority = intensity * radius * radius;
             if (!flickers) {
-                return new FrameLight(x, y, z, radius, red, green, blue, intensity);
+                return new FrameLight(
+                        x, y, z, radius,
+                        red, green, blue, intensity,
+                        stablePriority
+                );
             }
             double waveA = Math.sin(time * 0.37 + phase);
             double waveB = Math.sin(time * 1.13 + phase * 1.71);
@@ -441,7 +452,8 @@ public final class RtDynamicLights {
                     red,
                     Math.max(0.0F, green * (1.0F + hueShift)),
                     Math.max(0.0F, blue * (1.0F - hueShift)),
-                    intensity * brightness
+                    intensity * brightness,
+                    stablePriority
             );
         }
     }
@@ -454,7 +466,8 @@ public final class RtDynamicLights {
             float red,
             float green,
             float blue,
-            float intensity
+            float intensity,
+            float stablePriority
     ) {
     }
 

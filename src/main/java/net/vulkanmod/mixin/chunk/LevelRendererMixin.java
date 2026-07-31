@@ -19,6 +19,7 @@ import net.vulkanmod.render.chunk.TerrainRenderState;
 import net.vulkanmod.render.chunk.WorldRenderer;
 import net.vulkanmod.vulkan.VRenderSystem;
 import net.vulkanmod.vulkan.raytracing.RtDynamicLights;
+import net.vulkanmod.vulkan.raytracing.RtTemporalResources;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.*;
 import org.spongepowered.asm.mixin.injection.At;
@@ -74,6 +75,7 @@ public abstract class LevelRendererMixin {
             // for the vanilla sun quad. The vector points from the world to the sun.
             VRenderSystem.setSunDirection(-Mth.sin(sunAngle), Mth.cos(sunAngle), 0.0F);
             RtDynamicLights.update(level, camera, partialTick);
+            RtTemporalResources.updateCamera(level, camera);
         }
         prepareWorldPassRenderState();
     }

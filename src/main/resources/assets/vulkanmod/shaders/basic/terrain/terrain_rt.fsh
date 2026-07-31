@@ -29,6 +29,16 @@ layout(binding = 1) uniform UBO {
     float AlphaCutout;
     int RtDynamicLightShadows;
     float RtDynamicLightStrength;
+    int RtDynamicMaxLightsPerPixel;
+    int RtDynamicShadowMaxLights;
+    float RtDynamicShadowDistance;
+    int RtSkyOcclusion;
+    int RtSkyRays;
+    float RtSkyDistance;
+    int RtTemporalHistoryValid;
+    int RtFrameIndex;
+    float RtTemporalBlend;
+    int RtSkyDenoiser;
 };
 
 layout(binding = 4) uniform accelerationStructureEXT TopLevelAS;
@@ -47,6 +57,10 @@ layout(std430, binding = 6) readonly buffer RtDynamicLightStorage {
     RtPointLight RtDynamicLights[];
 };
 
+layout(rgba16f, binding = 7) uniform image2D RtTemporalCurrent;
+layout(rgba16f, binding = 8) uniform readonly image2D RtTemporalPrevious;
+layout(r32ui, binding = 9) uniform uimage2D RtTemporalDepthOwner;
+
 layout(location = 0) in float vertexDistance;
 layout(location = 1) in vec4 vertexColor;
 layout(location = 2) in vec2 texCoord0;
@@ -56,6 +70,8 @@ layout(location = 5) in vec2 lightLevels;
 layout(location = 6) in vec3 worldNormal;
 layout(location = 7) in vec3 cameraIncident;
 layout(location = 8) in float rtMaterialAttribute;
+layout(location = 9) in vec4 rtPreviousClipPosition;
+layout(location = 10) in float rtPreviousDistance;
 
 layout(location = 0) out vec4 fragColor;
 
@@ -212,6 +228,180 @@ bool traceOcclusion(vec3 origin, vec3 direction) {
     return traceOcclusionRange(origin, direction, ShadowDistance);
 }
 
+vec3 offsetRayOrigin(vec3 position, vec3 normal);
+
+uint rtRandomHash(uint value) {
+    value ^= value >> 16u;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15u;
+    value *= 0x846CA68Bu;
+    value ^= value >> 16u;
+    return value;
+}
+
+float rtRandom(inout uint state) {
+    state = rtRandomHash(state);
+    return float(state & 0x00FFFFFFu) * (1.0 / 16777216.0);
+}
+
+vec3 rtCosineHemisphere(vec3 normal, inout uint randomState) {
+    float randomA = rtRandom(randomState);
+    float randomB = rtRandom(randomState);
+    float radius = sqrt(randomA);
+    float angle = 6.28318530718 * randomB;
+    vec3 tangent = normalize(abs(normal.y) < 0.999
+        ? cross(vec3(0.0, 1.0, 0.0), normal)
+        : cross(vec3(1.0, 0.0, 0.0), normal));
+    vec3 bitangent = cross(normal, tangent);
+    return normalize(
+        tangent * (radius * cos(angle))
+        + bitangent * (radius * sin(angle))
+        + normal * sqrt(max(1.0 - randomA, 0.0))
+    );
+}
+
+float traceSkyVisibility(vec3 position, vec3 normal) {
+    int rayCount = clamp(RtSkyRays, 1, 4);
+    uint randomState = uint(gl_FragCoord.x)
+        ^ (uint(gl_FragCoord.y) * 0x9E3779B9u)
+        ^ (uint(RtFrameIndex) * 0x85EBCA6Bu);
+    float visibleSamples = 0.0;
+    vec3 rayOrigin = offsetRayOrigin(position + normal * 0.045, normal);
+    for (int rayIndex = 0; rayIndex < rayCount; rayIndex++) {
+        vec3 rayDirection = rtCosineHemisphere(normal, randomState);
+        visibleSamples += traceOcclusionRange(rayOrigin, rayDirection, RtSkyDistance)
+            ? 0.0
+            : 1.0;
+    }
+    return visibleSamples / float(rayCount);
+}
+
+vec2 rtOctSignNotZero(vec2 value) {
+    return vec2(
+        value.x >= 0.0 ? 1.0 : -1.0,
+        value.y >= 0.0 ? 1.0 : -1.0
+    );
+}
+
+vec2 rtOctEncode(vec3 normal) {
+    normal /= abs(normal.x) + abs(normal.y) + abs(normal.z);
+    vec2 encoded = normal.xy;
+    if (normal.z < 0.0) {
+        encoded = (1.0 - abs(encoded.yx)) * rtOctSignNotZero(encoded.xy);
+    }
+    return encoded * 0.5 + 0.5;
+}
+
+vec3 rtOctDecode(vec2 encoded) {
+    vec2 value = encoded * 2.0 - 1.0;
+    vec3 normal = vec3(value, 1.0 - abs(value.x) - abs(value.y));
+    if (normal.z < 0.0) {
+        normal.xy = (1.0 - abs(normal.yx)) * rtOctSignNotZero(normal.xy);
+    }
+    return normalize(normal);
+}
+
+float filterPreviousSkyVisibility(
+    vec2 pixelPosition,
+    float surfaceDistance,
+    vec3 surfaceNormal
+) {
+    ivec2 historySize = imageSize(RtTemporalPrevious);
+    ivec2 basePixel = ivec2(floor(pixelPosition));
+    int filterRadius = RtSkyDenoiser <= 0 ? 0 : RtSkyDenoiser;
+    float weightedVisibility = 0.0;
+    float totalWeight = 0.0;
+    float distanceTolerance = max(0.20, surfaceDistance * 0.004);
+
+    for (int offsetY = -2; offsetY <= 2; offsetY++) {
+        for (int offsetX = -2; offsetX <= 2; offsetX++) {
+            if (abs(offsetX) > filterRadius || abs(offsetY) > filterRadius) {
+                continue;
+            }
+            ivec2 samplePixel = clamp(
+                basePixel + ivec2(offsetX, offsetY),
+                ivec2(0),
+                historySize - ivec2(1)
+            );
+            vec4 previous = imageLoad(RtTemporalPrevious, samplePixel);
+            if (previous.g <= 0.0) {
+                continue;
+            }
+            float distanceWeight = max(
+                1.0 - abs(previous.g - surfaceDistance) / distanceTolerance,
+                0.0
+            );
+            vec3 previousNormal = rtOctDecode(previous.ba);
+            float normalWeight = pow(max(dot(previousNormal, surfaceNormal), 0.0), 24.0);
+            vec2 sampleDelta = vec2(samplePixel) + vec2(0.5) - pixelPosition;
+            float spatialWeight = exp(-dot(sampleDelta, sampleDelta) * 0.65);
+            float weight = distanceWeight * normalWeight * spatialWeight;
+            weightedVisibility += previous.r * weight;
+            totalWeight += weight;
+        }
+    }
+
+    return totalWeight > 0.0001
+        ? weightedVisibility / totalWeight
+        : -1.0;
+}
+
+float accumulateSkyVisibility(
+    float currentVisibility,
+    float surfaceDistance,
+    vec3 surfaceNormal
+) {
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    ivec2 historySize = imageSize(RtTemporalCurrent);
+    if (any(lessThan(pixel, ivec2(0))) || any(greaterThanEqual(pixel, historySize))) {
+        return currentVisibility;
+    }
+
+    float accumulated = currentVisibility;
+    bool validReprojection = rtPreviousClipPosition.w > 0.0001;
+    vec2 previousNdc = validReprojection
+        ? rtPreviousClipPosition.xy / rtPreviousClipPosition.w
+        : vec2(2.0);
+    validReprojection = validReprojection
+        && all(lessThanEqual(abs(previousNdc), vec2(1.01)));
+    vec2 previousUv = vec2(
+        previousNdc.x * 0.5 + 0.5,
+        0.5 - previousNdc.y * 0.5
+    );
+    vec2 previousPixelPosition = previousUv * vec2(historySize);
+
+    if (RtTemporalHistoryValid != 0
+            && RtTemporalBlend > 0.0
+            && validReprojection) {
+        float previousVisibility = filterPreviousSkyVisibility(
+            clamp(
+                previousPixelPosition,
+                vec2(0.5),
+                vec2(historySize) - vec2(0.5)
+            ),
+            rtPreviousDistance,
+            surfaceNormal
+        );
+        if (previousVisibility >= 0.0) {
+            accumulated = mix(
+                currentVisibility,
+                previousVisibility,
+                clamp(RtTemporalBlend, 0.0, 0.99975586)
+            );
+        }
+    }
+    uint fragmentDepth = floatBitsToUint(clamp(gl_FragCoord.z, 0.0, 1.0));
+    uint previousClosestDepth = imageAtomicMin(RtTemporalDepthOwner, pixel, fragmentDepth);
+    if (fragmentDepth <= previousClosestDepth) {
+        imageStore(
+            RtTemporalCurrent,
+            pixel,
+            vec4(accumulated, surfaceDistance, rtOctEncode(surfaceNormal))
+        );
+    }
+    return accumulated;
+}
+
 vec3 reflectionSky(vec3 direction) {
     float horizon = smoothstep(-0.15, 0.55, direction.y);
     float daylight = smoothstep(-0.02, 0.08, SunDirection.y);
@@ -222,8 +412,14 @@ vec3 reflectionSky(vec3 direction) {
     return sky + vec3(1.0, 0.82, 0.58) * sunDisk * 3.0;
 }
 
-vec3 offsetRayOrigin(vec3 position, vec3 normal);
-vec3 evaluateDynamicRtLights(vec3 position, vec3 normal, bool twoSided, bool traceShadows);
+vec3 evaluateDynamicRtLights(
+    vec3 position,
+    vec3 normal,
+    bool twoSided,
+    bool traceShadows,
+    out uint evaluatedLightCount,
+    out uint shadowRayCount
+);
 
 vec3 traceReflection(vec3 origin, vec3 direction, out float normalizedHitDistance) {
     normalizedHitDistance = -1.0;
@@ -324,7 +520,16 @@ vec3 traceReflection(vec3 origin, vec3 direction, out float normalizedHitDistanc
             + rtSkyColor(daylight) * skyLevel * SkyLightStrength
             + directSun
             + rtBlockColor() * (0.90 * blockLevel * BlockLightStrength);
-    hitLighting += evaluateDynamicRtLights(hitPosition, hitNormal, hitCutout, false);
+    uint ignoredEvaluatedLights;
+    uint ignoredShadowRays;
+    hitLighting += evaluateDynamicRtLights(
+        hitPosition,
+        hitNormal,
+        hitCutout,
+        false,
+        ignoredEvaluatedLights,
+        ignoredShadowRays
+    );
     vec3 reflectedSurface = hitColor * hitLighting
         + hitColor * hitEmission * rtEmissionBoost(hitMaterial);
     float distanceFade = smoothstep(
@@ -402,64 +607,100 @@ int rtFindDynamicCell(ivec3 cell) {
     return -1;
 }
 
-vec3 evaluateDynamicRtLights(vec3 position, vec3 normal, bool twoSided, bool traceShadows) {
+const ivec3 RT_DYNAMIC_CELL_OFFSETS[27] = ivec3[](
+    ivec3( 0,  0,  0),
+    ivec3(-1,  0,  0), ivec3( 1,  0,  0),
+    ivec3( 0, -1,  0), ivec3( 0,  1,  0),
+    ivec3( 0,  0, -1), ivec3( 0,  0,  1),
+    ivec3(-1, -1,  0), ivec3(-1,  1,  0),
+    ivec3( 1, -1,  0), ivec3( 1,  1,  0),
+    ivec3(-1,  0, -1), ivec3(-1,  0,  1),
+    ivec3( 1,  0, -1), ivec3( 1,  0,  1),
+    ivec3( 0, -1, -1), ivec3( 0, -1,  1),
+    ivec3( 0,  1, -1), ivec3( 0,  1,  1),
+    ivec3(-1, -1, -1), ivec3(-1, -1,  1),
+    ivec3(-1,  1, -1), ivec3(-1,  1,  1),
+    ivec3( 1, -1, -1), ivec3( 1, -1,  1),
+    ivec3( 1,  1, -1), ivec3( 1,  1,  1)
+);
+
+vec3 evaluateDynamicRtLights(
+    vec3 position,
+    vec3 normal,
+    bool twoSided,
+    bool traceShadows,
+    out uint evaluatedLightCount,
+    out uint shadowRayCount
+) {
     vec3 accumulatedLight = vec3(0.0);
+    evaluatedLightCount = 0u;
+    shadowRayCount = 0u;
     ivec3 surfaceCell = ivec3(floor(position * (1.0 / 32.0)));
     uint totalLightCount = RtDynamicLightHeader.x;
 
-    for (int cellZ = -1; cellZ <= 1; cellZ++) {
-        for (int cellY = -1; cellY <= 1; cellY++) {
-            for (int cellX = -1; cellX <= 1; cellX++) {
-                int packedRange = rtFindDynamicCell(surfaceCell + ivec3(cellX, cellY, cellZ));
-                if (packedRange == -1) {
-                    continue;
-                }
-                uint rangeBits = uint(packedRange);
-                uint lightStart = rangeBits & 0xFFFFFu;
-                uint lightCount = rangeBits >> 20u;
-                for (uint cellLightIndex = 0u; cellLightIndex < lightCount; cellLightIndex++) {
-                    uint lightIndex = lightStart + cellLightIndex;
-                    if (lightIndex >= totalLightCount) {
-                        break;
-                    }
+    for (int cellOffsetIndex = 0; cellOffsetIndex < 27; cellOffsetIndex++) {
+        int packedRange = rtFindDynamicCell(
+            surfaceCell + RT_DYNAMIC_CELL_OFFSETS[cellOffsetIndex]
+        );
+        if (packedRange == -1) {
+            continue;
+        }
+        uint rangeBits = uint(packedRange);
+        uint lightStart = rangeBits & 0xFFFFFu;
+        uint lightCount = rangeBits >> 20u;
+        for (uint cellLightIndex = 0u; cellLightIndex < lightCount; cellLightIndex++) {
+            uint lightIndex = lightStart + cellLightIndex;
+            if (lightIndex >= totalLightCount) {
+                break;
+            }
 
-                    RtPointLight pointLight = RtDynamicLights[lightIndex];
-                    vec4 positionRadius = pointLight.positionRadius;
-                    vec4 colorIntensity = pointLight.colorIntensity;
-                    vec3 surfaceToLightVector = positionRadius.xyz - position;
-                    float distanceToLight = length(surfaceToLightVector);
-                    float lightRadius = positionRadius.w;
-                    if (distanceToLight <= 0.02 || distanceToLight >= lightRadius || lightRadius <= 0.0) {
-                        continue;
-                    }
+            RtPointLight pointLight = RtDynamicLights[lightIndex];
+            vec4 positionRadius = pointLight.positionRadius;
+            vec4 colorIntensity = pointLight.colorIntensity;
+            vec3 surfaceToLightVector = positionRadius.xyz - position;
+            float distanceToLight = length(surfaceToLightVector);
+            float lightRadius = positionRadius.w;
+            if (distanceToLight <= 0.02 || distanceToLight >= lightRadius || lightRadius <= 0.0) {
+                continue;
+            }
 
-                    vec3 lightDirection = surfaceToLightVector / distanceToLight;
-                    float normalWeight = twoSided
-                        ? abs(dot(normal, lightDirection))
-                        : max(dot(normal, lightDirection), 0.0);
-                    float radialFalloff = max(1.0 - distanceToLight / lightRadius, 0.0);
-                    float attenuation = radialFalloff * radialFalloff
-                        * (1.5 / (1.0 + 0.018 * distanceToLight * distanceToLight));
-                    float contribution = normalWeight * attenuation
-                        * colorIntensity.a * RtDynamicLightStrength;
-                    if (contribution <= 0.002) {
-                        continue;
-                    }
+            vec3 lightDirection = surfaceToLightVector / distanceToLight;
+            float normalWeight = twoSided
+                ? abs(dot(normal, lightDirection))
+                : max(dot(normal, lightDirection), 0.0);
+            float radialFalloff = max(1.0 - distanceToLight / lightRadius, 0.0);
+            float attenuation = radialFalloff * radialFalloff
+                * (1.5 / (1.0 + 0.018 * distanceToLight * distanceToLight));
+            float contribution = normalWeight * attenuation
+                * colorIntensity.a * RtDynamicLightStrength;
+            if (contribution <= 0.002) {
+                continue;
+            }
+            evaluatedLightCount++;
 
-                    bool shadowed = false;
-                    if (traceShadows && RtDynamicLightShadows != 0) {
-                        vec3 originNormal = dot(normal, lightDirection) < 0.0 ? -normal : normal;
-                        vec3 lightRayOrigin = offsetRayOrigin(
-                            position + originNormal * 0.04 + lightDirection * 0.01,
-                            originNormal
-                        );
-                        float traceDistance = max(distanceToLight - 0.55, 0.03);
-                        shadowed = traceOcclusionRange(lightRayOrigin, lightDirection, traceDistance);
-                    }
-                    if (!shadowed) {
-                        accumulatedLight += colorIntensity.rgb * contribution;
-                    }
-                }
+            bool shadowed = false;
+            bool shadowBudgetAvailable = RtDynamicShadowMaxLights <= 0
+                || shadowRayCount < uint(RtDynamicShadowMaxLights);
+            bool shadowDistanceAvailable = distanceToLight <= RtDynamicShadowDistance;
+            if (traceShadows
+                    && RtDynamicLightShadows != 0
+                    && shadowBudgetAvailable
+                    && shadowDistanceAvailable) {
+                vec3 originNormal = dot(normal, lightDirection) < 0.0 ? -normal : normal;
+                vec3 lightRayOrigin = offsetRayOrigin(
+                    position + originNormal * 0.04 + lightDirection * 0.01,
+                    originNormal
+                );
+                float traceDistance = max(distanceToLight - 0.55, 0.03);
+                shadowed = traceOcclusionRange(lightRayOrigin, lightDirection, traceDistance);
+                shadowRayCount++;
+            }
+            if (!shadowed) {
+                accumulatedLight += colorIntensity.rgb * contribution;
+            }
+            if (RtDynamicMaxLightsPerPixel > 0
+                    && evaluatedLightCount >= uint(RtDynamicMaxLightsPerPixel)) {
+                return accumulatedLight;
             }
         }
     }
@@ -521,7 +762,11 @@ void main() {
         return;
     }
 
-    if (reflectiveWater && RtDebugView != 6 && RtDebugView != 9) {
+    if (reflectiveWater
+            && RtDebugView != 6
+            && RtDebugView != 9
+            && RtDebugView != 10
+            && RtDebugView != 11) {
         vec3 waterNormal = length(worldNormal) > 0.5
             ? normalize(worldNormal)
             : normalize(cross(dFdx(worldPosition), dFdy(worldPosition)));
@@ -586,14 +831,44 @@ void main() {
         fragColor = vec4(vec3(1.0 - occlusion), 1.0);
         return;
     }
+    uint evaluatedDynamicLights;
+    uint dynamicShadowRays;
     vec3 dynamicLighting = evaluateDynamicRtLights(
         worldPosition,
         geometricNormal,
         twoSidedSurface,
-        true
+        true,
+        evaluatedDynamicLights,
+        dynamicShadowRays
     );
     if (RtDebugView == 9) {
         fragColor = vec4(dynamicLighting / (vec3(1.0) + dynamicLighting), 1.0);
+        return;
+    }
+    if (RtDebugView == 10) {
+        float budgetScale = RtDynamicShadowMaxLights <= 0
+            ? 16.0
+            : max(float(RtDynamicShadowMaxLights), 1.0);
+        float budgetLoad = clamp(float(dynamicShadowRays) / budgetScale, 0.0, 1.0);
+        float unshadowedRatio = evaluatedDynamicLights == 0u
+            ? 0.0
+            : 1.0 - float(dynamicShadowRays) / float(evaluatedDynamicLights);
+        vec3 budgetColor = mix(vec3(0.02, 0.35, 0.04), vec3(1.0, 0.04, 0.01), budgetLoad);
+        budgetColor = mix(budgetColor, vec3(0.08, 0.15, 1.0), clamp(unshadowedRatio, 0.0, 1.0) * 0.45);
+        fragColor = vec4(budgetColor, 1.0);
+        return;
+    }
+
+    float skyVisibility = 1.0;
+    if (RtSkyOcclusion != 0) {
+        skyVisibility = accumulateSkyVisibility(
+            traceSkyVisibility(worldPosition, geometricNormal),
+            vertexDistance,
+            geometricNormal
+        );
+    }
+    if (RtDebugView == 11) {
+        fragColor = vec4(vec3(skyVisibility), 1.0);
         return;
     }
 
@@ -603,10 +878,11 @@ void main() {
         float blockLevel = pow(clamp(lightLevels.x, 0.0, 1.0), 1.35);
         vec3 directSun = rtSunColor(sunHeight)
             * (0.82 * daylight * surfaceToLight * visibility * SunLightStrength);
+        vec3 tracedSky = rtSkyColor(daylight) * skyVisibility * SkyLightStrength;
         vec3 lighting = rtOnly
-            ? vec3(0.002) + directSun
+            ? vec3(0.002) + tracedSky * 0.72 + directSun
             : vec3(0.015)
-                + rtSkyColor(daylight) * skyLevel * SkyLightStrength
+                + tracedSky * skyLevel
                 + directSun
                 + rtBlockColor() * (0.90 * blockLevel * BlockLightStrength);
         lighting += dynamicLighting;

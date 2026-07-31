@@ -447,6 +447,8 @@ public abstract class Options {
                     case 7 -> "vulkanmod.options.rayTracing.debugView.alphaCutout";
                     case 8 -> "vulkanmod.options.rayTracing.debugView.reflectionDistance";
                     case 9 -> "vulkanmod.options.rayTracing.debugView.dynamicLights";
+                    case 10 -> "vulkanmod.options.rayTracing.debugView.dynamicShadowBudget";
+                    case 11 -> "vulkanmod.options.rayTracing.debugView.skyOcclusion";
                     default -> "options.off";
                 }))
                 .setTooltip(Component.translatable("vulkanmod.options.rayTracing.debugView.tooltip"))
@@ -506,16 +508,14 @@ public abstract class Options {
                 .setTooltip(Component.translatable("vulkanmod.options.rayTracing.shadowDarkness.tooltip"))
                 .setActivationFn(DeviceManager::isRayQueryEnabled);
 
-        RangeOption shadowDistance = new RangeOption(
+        CyclingOption<Integer> shadowDistance = new CyclingOption<>(
                 Component.translatable("vulkanmod.options.rayTracing.shadowDistance"),
-                32,
-                256,
-                32,
-                value -> Component.literal(value + " blocks"),
-                value -> config.rayTracingShadowDistance = Math.max(32, Math.min(256, value)),
-                () -> Math.max(32, Math.min(256, config.rayTracingShadowDistance))
+                new Integer[]{32, 64, 128, 256, 512, 0},
+                value -> config.rayTracingShadowDistance = sanitizeUnlimitedDistance(value, 32, 512),
+                () -> sanitizeUnlimitedDistance(config.rayTracingShadowDistance, 32, 512)
         );
         shadowDistance
+                .setTranslator(Options::translateUnlimitedDistance)
                 .setTooltip(Component.translatable("vulkanmod.options.rayTracing.shadowDistance.tooltip"))
                 .setImpact(PerformanceImpact.MEDIUM)
                 .setActivationFn(DeviceManager::isRayQueryEnabled);
@@ -573,6 +573,82 @@ public abstract class Options {
             blockLight.updateActiveState();
         });
 
+        SwitchOption skyOcclusion = new SwitchOption(
+                Component.translatable("vulkanmod.options.rayTracing.skyOcclusion"),
+                value -> config.rayTracingSkyOcclusion = value,
+                () -> config.rayTracingSkyOcclusion
+        );
+        skyOcclusion
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.skyOcclusion.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
+        CyclingOption<Integer> skyRays = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.skyRays"),
+                new Integer[]{1, 2, 4},
+                value -> config.rayTracingSkyRays = sanitizeSkyRayCount(value),
+                () -> sanitizeSkyRayCount(config.rayTracingSkyRays)
+        );
+        skyRays
+                .setTranslator(value -> Component.literal(value.toString()))
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.skyRays.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && skyOcclusion.getNewValue());
+
+        CyclingOption<Integer> skyDistance = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.skyDistance"),
+                new Integer[]{16, 32, 64, 128, 256, 0},
+                value -> config.rayTracingSkyDistance = sanitizeUnlimitedDistance(value, 16, 256),
+                () -> sanitizeUnlimitedDistance(config.rayTracingSkyDistance, 16, 256)
+        );
+        skyDistance
+                .setTranslator(Options::translateUnlimitedDistance)
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.skyDistance.tooltip"))
+                .setImpact(PerformanceImpact.MEDIUM)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && skyOcclusion.getNewValue());
+
+        CyclingOption<Integer> temporalFrames = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.temporalFrames"),
+                new Integer[]{1, 4, 8, 16, 32, 64, 0},
+                value -> config.rayTracingTemporalFrames = sanitizeTemporalFrames(value),
+                () -> sanitizeTemporalFrames(config.rayTracingTemporalFrames)
+        );
+        temporalFrames
+                .setTranslator(value -> {
+                    if (value == 0) {
+                        return Component.translatable("vulkanmod.options.rayTracing.unlimited");
+                    }
+                    if (value == 1) {
+                        return Component.translatable("options.off");
+                    }
+                    return Component.literal(value.toString());
+                })
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.temporalFrames.tooltip"))
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && skyOcclusion.getNewValue());
+
+        CyclingOption<Integer> skyDenoiser = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.skyDenoiser"),
+                new Integer[]{0, 1, 2},
+                value -> config.rayTracingSkyDenoiser = Math.max(0, Math.min(2, value)),
+                () -> Math.max(0, Math.min(2, config.rayTracingSkyDenoiser))
+        );
+        skyDenoiser
+                .setTranslator(value -> Component.translatable(switch (value) {
+                    case 1 -> "vulkanmod.options.rayTracing.skyDenoiser.fast";
+                    case 2 -> "vulkanmod.options.rayTracing.skyDenoiser.quality";
+                    default -> "options.off";
+                }))
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.skyDenoiser.tooltip"))
+                .setImpact(PerformanceImpact.MEDIUM)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && skyOcclusion.getNewValue());
+
+        skyOcclusion.setOnChange(() -> {
+            skyRays.updateActiveState();
+            skyDistance.updateActiveState();
+            temporalFrames.updateActiveState();
+            skyDenoiser.updateActiveState();
+        });
+
         SwitchOption dynamicLights = new SwitchOption(
                 Component.translatable("vulkanmod.options.rayTracing.dynamicLights"),
                 value -> config.rayTracingDynamicLights = value,
@@ -597,16 +673,30 @@ public abstract class Options {
                 .setImpact(PerformanceImpact.HIGH)
                 .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && dynamicLights.getNewValue());
 
-        RangeOption dynamicLightDistance = new RangeOption(
+        CyclingOption<Integer> dynamicLightDistance = new CyclingOption<>(
                 Component.translatable("vulkanmod.options.rayTracing.dynamicLightDistance"),
-                8, 256, 8,
-                value -> Component.literal(value + " blocks"),
-                value -> config.rayTracingDynamicLightDistance = Math.max(8, Math.min(256, value)),
-                () -> Math.max(8, Math.min(256, config.rayTracingDynamicLightDistance))
+                new Integer[]{8, 16, 32, 64, 128, 256, 0},
+                value -> config.rayTracingDynamicLightDistance = sanitizeUnlimitedDistance(value, 8, 256),
+                () -> sanitizeUnlimitedDistance(config.rayTracingDynamicLightDistance, 8, 256)
         );
         dynamicLightDistance
+                .setTranslator(Options::translateUnlimitedDistance)
                 .setTooltip(Component.translatable("vulkanmod.options.rayTracing.dynamicLightDistance.tooltip"))
                 .setImpact(PerformanceImpact.MEDIUM)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && dynamicLights.getNewValue());
+
+        CyclingOption<Integer> dynamicMaxLightsPerPixel = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.dynamicMaxLightsPerPixel"),
+                new Integer[]{1, 2, 4, 8, 16, 32, 64, 128, 0},
+                value -> config.rayTracingDynamicMaxLightsPerPixel = sanitizeDynamicMaxLightsPerPixel(value),
+                () -> sanitizeDynamicMaxLightsPerPixel(config.rayTracingDynamicMaxLightsPerPixel)
+        );
+        dynamicMaxLightsPerPixel
+                .setTranslator(value -> value == 0
+                        ? Component.translatable("vulkanmod.options.rayTracing.unlimited")
+                        : Component.literal(value.toString()))
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.dynamicMaxLightsPerPixel.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
                 .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && dynamicLights.getNewValue());
 
         SwitchOption dynamicLightShadows = new SwitchOption(
@@ -618,6 +708,36 @@ public abstract class Options {
                 .setTooltip(Component.translatable("vulkanmod.options.rayTracing.dynamicLightShadows.tooltip"))
                 .setImpact(PerformanceImpact.HIGH)
                 .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && dynamicLights.getNewValue());
+
+        CyclingOption<Integer> dynamicShadowMaxLights = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.dynamicShadowMaxLights"),
+                new Integer[]{1, 2, 4, 8, 16, 32, 64, 0},
+                value -> config.rayTracingDynamicShadowMaxLights = sanitizeDynamicShadowMaxLights(value),
+                () -> sanitizeDynamicShadowMaxLights(config.rayTracingDynamicShadowMaxLights)
+        );
+        dynamicShadowMaxLights
+                .setTranslator(value -> value == 0
+                        ? Component.translatable("vulkanmod.options.rayTracing.unlimited")
+                        : Component.literal(value.toString()))
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.dynamicShadowMaxLights.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled()
+                        && dynamicLights.getNewValue()
+                        && dynamicLightShadows.getNewValue());
+
+        CyclingOption<Integer> dynamicShadowDistance = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.dynamicShadowDistance"),
+                new Integer[]{8, 16, 32, 64, 128, 256, 0},
+                value -> config.rayTracingDynamicShadowDistance = sanitizeUnlimitedDistance(value, 8, 256),
+                () -> sanitizeUnlimitedDistance(config.rayTracingDynamicShadowDistance, 8, 256)
+        );
+        dynamicShadowDistance
+                .setTranslator(Options::translateUnlimitedDistance)
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.dynamicShadowDistance.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled()
+                        && dynamicLights.getNewValue()
+                        && dynamicLightShadows.getNewValue());
 
         RangeOption dynamicLightStrength = new RangeOption(
                 Component.translatable("vulkanmod.options.rayTracing.dynamicLightStrength"),
@@ -633,8 +753,16 @@ public abstract class Options {
         dynamicLights.setOnChange(() -> {
             dynamicLightCount.updateActiveState();
             dynamicLightDistance.updateActiveState();
+            dynamicMaxLightsPerPixel.updateActiveState();
             dynamicLightShadows.updateActiveState();
+            dynamicShadowMaxLights.updateActiveState();
+            dynamicShadowDistance.updateActiveState();
             dynamicLightStrength.updateActiveState();
+        });
+
+        dynamicLightShadows.setOnChange(() -> {
+            dynamicShadowMaxLights.updateActiveState();
+            dynamicShadowDistance.updateActiveState();
         });
 
         SwitchOption waterReflections = new SwitchOption(
@@ -658,14 +786,14 @@ public abstract class Options {
                 .setTooltip(Component.translatable("vulkanmod.options.rayTracing.waterReflectionStrength.tooltip"))
                 .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && waterReflections.getNewValue());
 
-        RangeOption waterReflectionDistance = new RangeOption(
+        CyclingOption<Integer> waterReflectionDistance = new CyclingOption<>(
                 Component.translatable("vulkanmod.options.rayTracing.waterReflectionDistance"),
-                16, 256, 16,
-                value -> Component.literal(value + " blocks"),
-                value -> config.rayTracingWaterReflectionDistance = Math.max(16, Math.min(256, value)),
-                () -> Math.max(16, Math.min(256, config.rayTracingWaterReflectionDistance))
+                new Integer[]{16, 32, 64, 128, 256, 512, 0},
+                value -> config.rayTracingWaterReflectionDistance = sanitizeUnlimitedDistance(value, 16, 512),
+                () -> sanitizeUnlimitedDistance(config.rayTracingWaterReflectionDistance, 16, 512)
         );
         waterReflectionDistance
+                .setTranslator(Options::translateUnlimitedDistance)
                 .setTooltip(Component.translatable("vulkanmod.options.rayTracing.waterReflectionDistance.tooltip"))
                 .setImpact(PerformanceImpact.MEDIUM)
                 .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && waterReflections.getNewValue());
@@ -687,10 +815,18 @@ public abstract class Options {
                         sunLight,
                         skyLight,
                         blockLight,
+                        skyOcclusion,
+                        skyRays,
+                        skyDistance,
+                        temporalFrames,
+                        skyDenoiser,
                         dynamicLights,
                         dynamicLightCount,
                         dynamicLightDistance,
+                        dynamicMaxLightsPerPixel,
                         dynamicLightShadows,
+                        dynamicShadowMaxLights,
+                        dynamicShadowDistance,
                         dynamicLightStrength,
                         waterReflections,
                         waterReflectionStrength,
@@ -706,12 +842,28 @@ public abstract class Options {
         return 8;
     }
 
+    private static int sanitizeSkyRayCount(int value) {
+        if (value <= 1) return 1;
+        if (value <= 2) return 2;
+        return 4;
+    }
+
+    private static int sanitizeTemporalFrames(int value) {
+        if (value <= 0) return 0;
+        if (value <= 1) return 1;
+        if (value <= 4) return 4;
+        if (value <= 8) return 8;
+        if (value <= 16) return 16;
+        if (value <= 32) return 32;
+        return 64;
+    }
+
     private static int sanitizeRtViewMode(int value) {
         return Math.max(0, Math.min(2, value));
     }
 
     private static int sanitizeRtDebugView(int value) {
-        return Math.max(0, Math.min(9, value));
+        return Math.max(0, Math.min(11, value));
     }
 
     private static int sanitizeDynamicLightCount(int value) {
@@ -725,6 +877,40 @@ public abstract class Options {
         if (value <= 128) return 128;
         if (value <= 256) return 256;
         return 512;
+    }
+
+    private static int sanitizeDynamicShadowMaxLights(int value) {
+        if (value <= 0) return 0;
+        if (value <= 1) return 1;
+        if (value <= 2) return 2;
+        if (value <= 4) return 4;
+        if (value <= 8) return 8;
+        if (value <= 16) return 16;
+        if (value <= 32) return 32;
+        return 64;
+    }
+
+    private static int sanitizeDynamicMaxLightsPerPixel(int value) {
+        if (value <= 0) return 0;
+        if (value <= 1) return 1;
+        if (value <= 2) return 2;
+        if (value <= 4) return 4;
+        if (value <= 8) return 8;
+        if (value <= 16) return 16;
+        if (value <= 32) return 32;
+        if (value <= 64) return 64;
+        return 128;
+    }
+
+    private static int sanitizeUnlimitedDistance(int value, int minimum, int maximum) {
+        if (value <= 0) return 0;
+        return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    private static Component translateUnlimitedDistance(Integer value) {
+        return value == 0
+                ? Component.translatable("vulkanmod.options.rayTracing.unlimited")
+                : Component.literal(value + " blocks");
     }
 
     public static OptionBlock[] getOtherOpts() {

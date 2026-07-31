@@ -281,6 +281,10 @@ public class VulkanImage {
                 srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
                 sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             }
+            case VK_IMAGE_LAYOUT_GENERAL -> {
+                srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            }
             case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL -> {
                 srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
                 sourceStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -303,6 +307,10 @@ public class VulkanImage {
             }
             case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL -> {
                 dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            }
+            case VK_IMAGE_LAYOUT_GENERAL -> {
+                dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
                 destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             }
             case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL -> {
@@ -516,7 +524,9 @@ public class VulkanImage {
             return switch (format) {
                 case VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB,
                      VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT,
-                     VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_SINT -> 4;
+                     VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_SINT,
+                     VK_FORMAT_R32_UINT -> 4;
+                case VK_FORMAT_R16G16B16A16_SFLOAT -> 8;
                 case VK_FORMAT_R8_UNORM -> 1;
 
                 default -> 0;
