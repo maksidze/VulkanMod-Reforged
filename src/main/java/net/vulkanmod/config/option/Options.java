@@ -921,6 +921,7 @@ public abstract class Options {
                 () -> Math.max(1, Math.min(8, config.rayTracingIndirectLightRays))
         );
         indirectLightRays
+                .setTranslator(value -> Component.literal(value + " rays"))
                 .setTooltip(Component.translatable("vulkanmod.options.rayTracing.indirectLightRays.tooltip"))
                 .setImpact(PerformanceImpact.HIGH)
                 .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && indirectLighting.getNewValue());
