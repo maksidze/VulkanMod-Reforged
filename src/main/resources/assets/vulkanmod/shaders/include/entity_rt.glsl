@@ -50,12 +50,15 @@ vec3 rt_entity_light(vec3 worldPosition, vec3 normal, vec3 baseColor) {
     }
     float sky = max(0.0, SkyLightStrength) * 0.35;
     vec3 dynamicLight = vec3(0.0);
-    uint evaluatedLights = 0u;
     uint shadowRays = 0u;
     uint totalLights = RtDynamicLightHeader.x;
-    uint maximumLights = RtDynamicMaxLightsPerPixel <= 0
-        ? totalLights
-        : uint(RtDynamicMaxLightsPerPixel);
+    uint selectedLightIndices[128];
+    float selectedContributions[128];
+    uint selectedLightCount = 0u;
+    uint selectedLightLimit = RtDynamicMaxLightsPerPixel <= 0
+        ? 128u
+        : uint(clamp(RtDynamicMaxLightsPerPixel, 1, 128));
+    bool unlimitedLights = RtDynamicMaxLightsPerPixel <= 0;
     ivec3 surfaceCell = ivec3(floor(worldPosition * (1.0 / 32.0)));
     for (int cellOffsetIndex = 0; cellOffsetIndex < 27; cellOffsetIndex++) {
         int packedRange = rt_entity_find_light_cell(surfaceCell + RT_ENTITY_LIGHT_CELL_OFFSETS[cellOffsetIndex]);
@@ -65,26 +68,76 @@ vec3 rt_entity_light(vec3 worldPosition, vec3 normal, vec3 baseColor) {
         uint lightCount = rangeBits >> 20u;
         for (uint cellLightIndex = 0u; cellLightIndex < lightCount; cellLightIndex++) {
             uint lightIndex = lightStart + cellLightIndex;
-            if (lightIndex >= totalLights || evaluatedLights >= maximumLights) break;
-        RtPointLight pointLight = RtDynamicLights[lightIndex];
+            if (lightIndex >= totalLights) break;
+            RtPointLight pointLight = RtDynamicLights[lightIndex];
+            vec3 toLight = pointLight.positionRadius.xyz - worldPosition;
+            float distanceToLight = length(toLight);
+            float radius = pointLight.positionRadius.w;
+            if (distanceToLight <= 0.02 || distanceToLight >= radius || radius <= 0.0) continue;
+            vec3 lightDirection = toLight / distanceToLight;
+            float surfaceWeight = abs(dot(n, lightDirection));
+            if (surfaceWeight <= 0.001) continue;
+            float radialFalloff = max(1.0 - distanceToLight / radius, 0.0);
+            float contribution = surfaceWeight * radialFalloff * radialFalloff
+                * (1.5 / (1.0 + 0.018 * distanceToLight * distanceToLight))
+                * pointLight.colorIntensity.a * RtDynamicLightStrength;
+            if (contribution <= 0.002) continue;
+
+            if (unlimitedLights) {
+                bool shadowed = false;
+                bool withinShadowBudget = RtDynamicShadowMaxLights <= 0
+                    || shadowRays < uint(RtDynamicShadowMaxLights);
+                if (RtDynamicLightShadows != 0 && withinShadowBudget
+                        && distanceToLight <= RtDynamicShadowDistance) {
+                    vec3 shadowOrigin = worldPosition + n * 0.04 + lightDirection * 0.01;
+                    shadowed = rt_entity_shadow(
+                        shadowOrigin,
+                        lightDirection,
+                        max(distanceToLight - 0.05, 0.03)
+                    );
+                    shadowRays++;
+                }
+                if (!shadowed) {
+                    dynamicLight += pointLight.colorIntensity.rgb * contribution;
+                }
+                continue;
+            }
+
+            bool appendSelectedLight = selectedLightCount < selectedLightLimit;
+            bool replaceWeakestLight = !appendSelectedLight
+                && (contribution > selectedContributions[selectedLightCount - 1u]
+                    || (contribution == selectedContributions[selectedLightCount - 1u]
+                        && lightIndex < selectedLightIndices[selectedLightCount - 1u]));
+            if (appendSelectedLight || replaceWeakestLight) {
+                uint insertionIndex = 0u;
+                if (appendSelectedLight) {
+                    insertionIndex = selectedLightCount;
+                    selectedLightCount++;
+                } else {
+                    insertionIndex = selectedLightCount - 1u;
+                }
+                while (insertionIndex > 0u) {
+                    uint previousIndex = insertionIndex - 1u;
+                    float previousContribution = selectedContributions[previousIndex];
+                    uint previousLightIndex = selectedLightIndices[previousIndex];
+                    bool belongsBeforePrevious = contribution > previousContribution
+                        || (contribution == previousContribution && lightIndex < previousLightIndex);
+                    if (!belongsBeforePrevious) break;
+                    selectedContributions[insertionIndex] = previousContribution;
+                    selectedLightIndices[insertionIndex] = previousLightIndex;
+                    insertionIndex = previousIndex;
+                }
+                selectedContributions[insertionIndex] = contribution;
+                selectedLightIndices[insertionIndex] = lightIndex;
+            }
+        }
+    }
+
+    for (uint selectedIndex = 0u; selectedIndex < selectedLightCount; selectedIndex++) {
+        RtPointLight pointLight = RtDynamicLights[selectedLightIndices[selectedIndex]];
         vec3 toLight = pointLight.positionRadius.xyz - worldPosition;
         float distanceToLight = length(toLight);
-        float radius = pointLight.positionRadius.w;
-        if (distanceToLight <= 0.02 || distanceToLight >= radius || radius <= 0.0) {
-            continue;
-        }
         vec3 lightDirection = toLight / distanceToLight;
-        float surfaceWeight = abs(dot(n, lightDirection));
-        if (surfaceWeight <= 0.001) {
-            continue;
-        }
-        float radialFalloff = max(1.0 - distanceToLight / radius, 0.0);
-        float contribution = surfaceWeight * radialFalloff * radialFalloff
-            * (1.5 / (1.0 + 0.018 * distanceToLight * distanceToLight))
-            * pointLight.colorIntensity.a * RtDynamicLightStrength;
-        if (contribution <= 0.002) {
-            continue;
-        }
         bool shadowed = false;
         bool withinShadowBudget = RtDynamicShadowMaxLights <= 0
             || shadowRays < uint(RtDynamicShadowMaxLights);
@@ -95,11 +148,9 @@ vec3 rt_entity_light(vec3 worldPosition, vec3 normal, vec3 baseColor) {
             shadowRays++;
         }
         if (!shadowed) {
-            dynamicLight += pointLight.colorIntensity.rgb * contribution;
+            dynamicLight += pointLight.colorIntensity.rgb
+                * selectedContributions[selectedIndex];
         }
-        evaluatedLights++;
-        }
-        if (evaluatedLights >= maximumLights) break;
     }
     return baseColor * (sky + max(0.0, SunLightStrength) * ndotl * visibility + dynamicLight);
 }

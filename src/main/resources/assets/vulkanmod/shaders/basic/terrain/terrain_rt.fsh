@@ -637,6 +637,13 @@ vec3 evaluateDynamicRtLights(
     shadowRayCount = 0u;
     ivec3 surfaceCell = ivec3(floor(position * (1.0 / 32.0)));
     uint totalLightCount = RtDynamicLightHeader.x;
+    uint selectedLightIndices[128];
+    float selectedContributions[128];
+    uint selectedLightCount = 0u;
+    uint selectedLightLimit = RtDynamicMaxLightsPerPixel <= 0
+        ? 128u
+        : uint(clamp(RtDynamicMaxLightsPerPixel, 1, 128));
+    bool unlimitedLights = RtDynamicMaxLightsPerPixel <= 0;
 
     for (int cellOffsetIndex = 0; cellOffsetIndex < 27; cellOffsetIndex++) {
         int packedRange = rtFindDynamicCell(
@@ -676,33 +683,93 @@ vec3 evaluateDynamicRtLights(
             if (contribution <= 0.002) {
                 continue;
             }
-            evaluatedLightCount++;
 
-            bool shadowed = false;
-            bool shadowBudgetAvailable = RtDynamicShadowMaxLights <= 0
-                || shadowRayCount < uint(RtDynamicShadowMaxLights);
-            bool shadowDistanceAvailable = distanceToLight <= RtDynamicShadowDistance;
-            if (traceShadows
-                    && RtDynamicLightShadows != 0
-                    && shadowBudgetAvailable
-                    && shadowDistanceAvailable) {
-                vec3 originNormal = dot(normal, lightDirection) < 0.0 ? -normal : normal;
-                vec3 lightRayOrigin = offsetRayOrigin(
-                    position + originNormal * 0.04 + lightDirection * 0.01,
-                    originNormal
-                );
-                float traceDistance = max(distanceToLight - 0.55, 0.03);
-                shadowed = traceOcclusionRange(lightRayOrigin, lightDirection, traceDistance);
-                shadowRayCount++;
+            if (unlimitedLights) {
+                bool shadowed = false;
+                bool shadowBudgetAvailable = RtDynamicShadowMaxLights <= 0
+                    || shadowRayCount < uint(RtDynamicShadowMaxLights);
+                bool shadowDistanceAvailable = distanceToLight <= RtDynamicShadowDistance;
+                if (traceShadows
+                        && RtDynamicLightShadows != 0
+                        && shadowBudgetAvailable
+                        && shadowDistanceAvailable) {
+                    vec3 originNormal = dot(normal, lightDirection) < 0.0 ? -normal : normal;
+                    vec3 lightRayOrigin = offsetRayOrigin(
+                        position + originNormal * 0.04 + lightDirection * 0.01,
+                        originNormal
+                    );
+                    float traceDistance = max(distanceToLight - 0.55, 0.03);
+                    shadowed = traceOcclusionRange(lightRayOrigin, lightDirection, traceDistance);
+                    shadowRayCount++;
+                }
+                if (!shadowed) {
+                    accumulatedLight += colorIntensity.rgb * contribution;
+                }
+                evaluatedLightCount++;
+                continue;
             }
-            if (!shadowed) {
-                accumulatedLight += colorIntensity.rgb * contribution;
-            }
-            if (RtDynamicMaxLightsPerPixel > 0
-                    && evaluatedLightCount >= uint(RtDynamicMaxLightsPerPixel)) {
-                return accumulatedLight;
+
+            bool appendSelectedLight = selectedLightCount < selectedLightLimit;
+            bool replaceWeakestLight = !appendSelectedLight
+                && (contribution > selectedContributions[selectedLightCount - 1u]
+                    || (contribution == selectedContributions[selectedLightCount - 1u]
+                        && lightIndex < selectedLightIndices[selectedLightCount - 1u]));
+            if (appendSelectedLight || replaceWeakestLight) {
+                uint insertionIndex = 0u;
+                if (appendSelectedLight) {
+                    insertionIndex = selectedLightCount;
+                    selectedLightCount++;
+                } else {
+                    insertionIndex = selectedLightCount - 1u;
+                }
+                while (insertionIndex > 0u) {
+                    uint previousIndex = insertionIndex - 1u;
+                    float previousContribution = selectedContributions[previousIndex];
+                    uint previousLightIndex = selectedLightIndices[previousIndex];
+                    bool belongsBeforePrevious = contribution > previousContribution
+                        || (contribution == previousContribution && lightIndex < previousLightIndex);
+                    if (!belongsBeforePrevious) break;
+                    selectedContributions[insertionIndex] = previousContribution;
+                    selectedLightIndices[insertionIndex] = previousLightIndex;
+                    insertionIndex = previousIndex;
+                }
+                selectedContributions[insertionIndex] = contribution;
+                selectedLightIndices[insertionIndex] = lightIndex;
             }
         }
+    }
+
+    // Shade only after all neighboring cells have been inspected. Selecting the
+    // strongest contributions makes the result independent of cell traversal order.
+    for (uint selectedIndex = 0u; selectedIndex < selectedLightCount; selectedIndex++) {
+        RtPointLight pointLight = RtDynamicLights[selectedLightIndices[selectedIndex]];
+        vec3 surfaceToLightVector = pointLight.positionRadius.xyz - position;
+        float distanceToLight = length(surfaceToLightVector);
+        vec3 lightDirection = surfaceToLightVector / distanceToLight;
+        bool shadowed = false;
+        bool shadowBudgetAvailable = RtDynamicShadowMaxLights <= 0
+            || shadowRayCount < uint(RtDynamicShadowMaxLights);
+        bool shadowDistanceAvailable = distanceToLight <= RtDynamicShadowDistance;
+        if (traceShadows
+                && RtDynamicLightShadows != 0
+                && shadowBudgetAvailable
+                && shadowDistanceAvailable) {
+            vec3 originNormal = dot(normal, lightDirection) < 0.0 ? -normal : normal;
+            vec3 lightRayOrigin = offsetRayOrigin(
+                position + originNormal * 0.04 + lightDirection * 0.01,
+                originNormal
+            );
+            float traceDistance = max(distanceToLight - 0.55, 0.03);
+            shadowed = traceOcclusionRange(lightRayOrigin, lightDirection, traceDistance);
+            shadowRayCount++;
+        }
+        if (!shadowed) {
+            accumulatedLight += pointLight.colorIntensity.rgb
+                * selectedContributions[selectedIndex];
+        }
+    }
+    if (!unlimitedLights) {
+        evaluatedLightCount = selectedLightCount;
     }
     return accumulatedLight;
 }
