@@ -24,6 +24,9 @@ layout(binding = 1) uniform UBO {
     float WaterReflectionDistance;
     int BlockReflections;
     float BlockReflectionStrength;
+    int RtMirrorSunlight;
+    float RtMirrorSunlightStrength;
+    float RtMirrorSunlightDistance;
     int RtIndirectLighting;
     float RtIndirectLightStrength;
     float RtIndirectLightDistance;

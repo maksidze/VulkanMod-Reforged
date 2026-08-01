@@ -57,6 +57,9 @@ public class Config {
     public int rayTracingWaterReflectionDistance = 128;
     public boolean rayTracingBlockReflections = true;
     public int rayTracingBlockReflectionStrength = 35;
+    public boolean rayTracingMirrorSunlight = false;
+    public int rayTracingMirrorSunlightStrength = 100;
+    public int rayTracingMirrorSunlightDistance = 96;
     // One sample per pixel is deliberately opt-in until colour-history denoising
     // is available. It is useful for experiments but can be visibly grainy.
     public boolean rayTracingIndirectLighting = false;

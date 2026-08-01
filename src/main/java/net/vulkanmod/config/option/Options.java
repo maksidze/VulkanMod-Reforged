@@ -840,6 +840,44 @@ public abstract class Options {
 
         blockReflections.setOnChange(blockReflectionStrength::updateActiveState);
 
+        SwitchOption mirrorSunlight = new SwitchOption(
+                Component.translatable("vulkanmod.options.rayTracing.mirrorSunlight"),
+                value -> config.rayTracingMirrorSunlight = value,
+                () -> config.rayTracingMirrorSunlight
+        );
+        mirrorSunlight
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.mirrorSunlight.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
+        RangeOption mirrorSunlightStrength = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.mirrorSunlightStrength"),
+                0, 200, 5,
+                value -> Component.literal(value + "%"),
+                value -> config.rayTracingMirrorSunlightStrength = Math.max(0, Math.min(200, value)),
+                () -> Math.max(0, Math.min(200, config.rayTracingMirrorSunlightStrength))
+        );
+        mirrorSunlightStrength
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.mirrorSunlightStrength.tooltip"))
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && mirrorSunlight.getNewValue());
+
+        CyclingOption<Integer> mirrorSunlightDistance = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.mirrorSunlightDistance"),
+                new Integer[]{16, 32, 64, 96, 128, 256, 0},
+                value -> config.rayTracingMirrorSunlightDistance = sanitizeUnlimitedDistance(value, 16, 256),
+                () -> sanitizeUnlimitedDistance(config.rayTracingMirrorSunlightDistance, 16, 256)
+        );
+        mirrorSunlightDistance
+                .setTranslator(Options::translateUnlimitedDistance)
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.mirrorSunlightDistance.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && mirrorSunlight.getNewValue());
+
+        mirrorSunlight.setOnChange(() -> {
+            mirrorSunlightStrength.updateActiveState();
+            mirrorSunlightDistance.updateActiveState();
+        });
+
         SwitchOption indirectLighting = new SwitchOption(
                 Component.translatable("vulkanmod.options.rayTracing.indirectLighting"),
                 value -> config.rayTracingIndirectLighting = value,
@@ -909,6 +947,9 @@ public abstract class Options {
                         waterReflectionDistance,
                         blockReflections,
                         blockReflectionStrength,
+                        mirrorSunlight,
+                        mirrorSunlightStrength,
+                        mirrorSunlightDistance,
                         indirectLighting,
                         indirectLightStrength,
                         indirectLightDistance

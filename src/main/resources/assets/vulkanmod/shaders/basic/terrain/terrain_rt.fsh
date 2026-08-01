@@ -26,6 +26,9 @@ layout(binding = 1) uniform UBO {
     float WaterReflectionDistance;
     int BlockReflections;
     float BlockReflectionStrength;
+    int RtMirrorSunlight;
+    float RtMirrorSunlightStrength;
+    float RtMirrorSunlightDistance;
     int RtIndirectLighting;
     float RtIndirectLightStrength;
     float RtIndirectLightDistance;
@@ -569,6 +572,112 @@ vec3 traceReflection(
     return mix(reflectedSurface, reflectionSky(direction), distanceFade);
 }
 
+vec3 traceMirrorSunlight(vec3 position, vec3 receiverNormal) {
+    vec3 sunDirection = normalize(SunDirection);
+    float daylight = smoothstep(-0.02, 0.08, sunDirection.y);
+    if (daylight <= 0.001) {
+        return vec3(0.0);
+    }
+
+    vec3 redirectedLight = vec3(0.0);
+    // Minecraft's terrain faces are axis-aligned. For each sun-facing axis,
+    // trace the exact reverse path receiver -> mirror -> sun. Unlike a random
+    // GI sample this deterministically finds the narrow specular path that
+    // creates a usable sunlight spot below an iron-block mirror.
+    for (int axis = 0; axis < 3; axis++) {
+        float sunComponent = sunDirection[axis];
+        if (abs(sunComponent) < 0.035) {
+            continue;
+        }
+
+        vec3 mirrorNormal = vec3(0.0);
+        mirrorNormal[axis] = sunComponent >= 0.0 ? 1.0 : -1.0;
+        vec3 mirrorToReceiver = normalize(reflect(-sunDirection, mirrorNormal));
+        vec3 receiverToMirror = -mirrorToReceiver;
+        float receiverCosine = max(dot(receiverNormal, receiverToMirror), 0.0);
+        if (receiverCosine <= 0.001) {
+            continue;
+        }
+
+        rayQueryEXT query;
+        rayQueryInitializeEXT(
+            query,
+            TopLevelAS,
+            gl_RayFlagsNoneEXT,
+            0xFF,
+            offsetRayOrigin(position + receiverNormal * 0.035, receiverNormal),
+            0.03,
+            receiverToMirror,
+            RtMirrorSunlightDistance
+        );
+
+        while (rayQueryProceedEXT(query)) {
+            if (rayQueryGetIntersectionTypeEXT(query, false)
+                    != gl_RayQueryCandidateIntersectionTriangleEXT) {
+                continue;
+            }
+
+            uint primitiveIndex = rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
+            uint uvBase = rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
+            uint opaquePrimitiveCount = PackedRtUvs[uvBase];
+            bool acceptsIntersection = primitiveIndex < opaquePrimitiveCount;
+            if (!acceptsIntersection) {
+                uint triangleUvBase = rtHitBase(uvBase, primitiveIndex);
+                vec2 uv0 = unpackRtUv(PackedRtUvs[triangleUvBase]);
+                vec2 uv1 = unpackRtUv(PackedRtUvs[triangleUvBase + 1u]);
+                vec2 uv2 = unpackRtUv(PackedRtUvs[triangleUvBase + 2u]);
+                vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, false);
+                vec2 candidateUv = uv0 * (1.0 - barycentrics.x - barycentrics.y)
+                    + uv1 * barycentrics.x
+                    + uv2 * barycentrics.y;
+                acceptsIntersection = textureLod(Sampler0, candidateUv, 0.0).a >= 0.5;
+            }
+            if (acceptsIntersection) {
+                rayQueryConfirmIntersectionEXT(query);
+            }
+        }
+
+        if (rayQueryGetIntersectionTypeEXT(query, true)
+                == gl_RayQueryCommittedIntersectionNoneEXT) {
+            continue;
+        }
+
+        uint primitiveIndex = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
+        uint uvBase = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+        uint triangleUvBase = rtHitBase(uvBase, primitiveIndex);
+        uint packedNormalMaterial = PackedRtUvs[triangleUvBase + 3u];
+        int mirrorMaterial = unpackRtMaterial(packedNormalMaterial);
+        vec3 hitNormal = unpackRtNormal(packedNormalMaterial);
+        if (mirrorMaterial != RT_MATERIAL_REFLECTIVE
+                || abs(dot(hitNormal, mirrorNormal)) < 0.985) {
+            continue;
+        }
+
+        float mirrorDistance = rayQueryGetIntersectionTEXT(query, true);
+        vec3 mirrorPosition = position + receiverToMirror * mirrorDistance;
+        vec3 sunRayOrigin = offsetRayOrigin(
+            mirrorPosition + mirrorNormal * 0.04 + sunDirection * 0.01,
+            mirrorNormal
+        );
+        if (traceOcclusionRange(sunRayOrigin, sunDirection, ShadowDistance)) {
+            continue;
+        }
+
+        vec2 uv0 = unpackRtUv(PackedRtUvs[triangleUvBase]);
+        vec2 uv1 = unpackRtUv(PackedRtUvs[triangleUvBase + 1u]);
+        vec2 uv2 = unpackRtUv(PackedRtUvs[triangleUvBase + 2u]);
+        vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
+        vec2 hitUv = uv0 * (1.0 - barycentrics.x - barycentrics.y)
+            + uv1 * barycentrics.x
+            + uv2 * barycentrics.y;
+        vec3 mirrorTint = mix(vec3(1.0), textureLod(Sampler0, hitUv, 0.0).rgb, 0.25);
+        float mirrorFacing = abs(dot(mirrorNormal, sunDirection));
+        redirectedLight += mirrorTint * rtSunColor(clamp(sunDirection.y, 0.0, 1.0))
+            * (0.82 * daylight * receiverCosine * smoothstep(0.04, 0.22, mirrorFacing));
+    }
+    return redirectedLight;
+}
+
 vec3 traceIndirectLight(vec3 position, vec3 normal) {
     // A cosine-distributed ray estimates the incoming irradiance for a Lambertian
     // surface. The hit shader evaluates the hit block's albedo, sun, skylight,
@@ -1088,6 +1197,12 @@ void main() {
                 + tracedSky * skyLevel
                 + directSun
                 + rtBlockColor() * (0.90 * blockLevel * BlockLightStrength);
+        if (RtMirrorSunlight != 0
+                && !twoSidedSurface
+                && (occlusion > 0.01 || surfaceToLight < 0.01)) {
+            lighting += traceMirrorSunlight(worldPosition, geometricNormal)
+                * RtMirrorSunlightStrength;
+        }
         if (RtIndirectLighting != 0 && !twoSidedSurface) {
             vec3 indirectLight = accumulateIndirectLight(
                 traceIndirectLight(worldPosition, geometricNormal),
