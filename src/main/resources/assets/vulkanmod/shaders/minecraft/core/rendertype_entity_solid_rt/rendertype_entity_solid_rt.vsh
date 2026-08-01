@@ -12,6 +12,9 @@ layout(location = 5) in vec3 Normal;
 
 layout(binding = 0) uniform UniformBufferObject {
    mat4 MVP;
+   mat4 ModelViewMat;
+   mat4 RtCameraInverseViewRotation;
+   vec3 CameraPosition;
    vec3 Light0_Direction;
    vec3 Light1_Direction;
 };
@@ -24,13 +27,17 @@ layout(location = 1) out vec4 lightMapColor;
 layout(location = 2) out vec4 overlayColor;
 layout(location = 3) out vec2 texCoord0;
 layout(location = 4) out float vertexDistance;
+layout(location = 5) out vec3 rtWorldPosition;
+layout(location = 6) out vec3 rtNormal;
 
 void main() {
     gl_Position = MVP * vec4(Position, 1.0);
-
     vertexDistance = fog_distance(Position.xyz, 0);
     vertexColor = minecraft_mix_light(Light0_Direction, Light1_Direction, Normal, Color);
     lightMapColor = texelFetch(Sampler2, UV2 / 16, 0);
     overlayColor = texelFetch(Sampler1, UV1, 0);
     texCoord0 = UV0;
+    vec3 cameraRelativePosition = (ModelViewMat * vec4(Position, 1.0)).xyz;
+    rtWorldPosition = (RtCameraInverseViewRotation * vec4(cameraRelativePosition, 0.0)).xyz + CameraPosition;
+    rtNormal = mat3(RtCameraInverseViewRotation * ModelViewMat) * Normal;
 }

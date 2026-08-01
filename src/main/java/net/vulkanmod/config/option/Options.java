@@ -649,6 +649,20 @@ public abstract class Options {
             skyDenoiser.updateActiveState();
         });
 
+        CyclingOption<Integer> entityProxyUpdateInterval = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.entityProxyUpdateInterval"),
+                new Integer[]{1, 2, 4, 10, 20},
+                value -> config.rayTracingEntityProxyUpdateInterval = Math.max(1, Math.min(20, value)),
+                () -> Math.max(1, Math.min(20, config.rayTracingEntityProxyUpdateInterval))
+        );
+        entityProxyUpdateInterval
+                .setTranslator(value -> value == 1
+                        ? Component.translatable("vulkanmod.options.rayTracing.entityProxyUpdateInterval.frame")
+                        : Component.literal(value + " frames"))
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.entityProxyUpdateInterval.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
         SwitchOption dynamicLights = new SwitchOption(
                 Component.translatable("vulkanmod.options.rayTracing.dynamicLights"),
                 value -> config.rayTracingDynamicLights = value,
@@ -820,6 +834,7 @@ public abstract class Options {
                         skyDistance,
                         temporalFrames,
                         skyDenoiser,
+                        entityProxyUpdateInterval,
                         dynamicLights,
                         dynamicLightCount,
                         dynamicLightDistance,

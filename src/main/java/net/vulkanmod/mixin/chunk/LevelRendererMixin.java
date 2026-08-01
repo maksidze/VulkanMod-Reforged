@@ -19,6 +19,7 @@ import net.vulkanmod.render.chunk.TerrainRenderState;
 import net.vulkanmod.render.chunk.WorldRenderer;
 import net.vulkanmod.vulkan.VRenderSystem;
 import net.vulkanmod.vulkan.raytracing.RtDynamicLights;
+import net.vulkanmod.vulkan.raytracing.RayTracingManager;
 import net.vulkanmod.vulkan.raytracing.RtTemporalResources;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.*;
@@ -68,6 +69,7 @@ public abstract class LevelRendererMixin {
     private void prepareLevelRenderState(DeltaTracker deltaTracker, boolean bl, Camera camera, GameRenderer gameRenderer, LightTexture lightTexture, Matrix4f matrix4f, Matrix4f matrix4f2, CallbackInfo ci) {
         ClientLevel level = Minecraft.getInstance().level;
         if (level != null) {
+            VRenderSystem.setRtCameraInverseViewRotation(matrix4f);
             float partialTick = deltaTracker.getGameTimeDeltaPartialTick(false);
             float sunAngle = level.getSunAngle(partialTick);
 
@@ -75,6 +77,7 @@ public abstract class LevelRendererMixin {
             // for the vanilla sun quad. The vector points from the world to the sun.
             VRenderSystem.setSunDirection(-Mth.sin(sunAngle), Mth.cos(sunAngle), 0.0F);
             RtDynamicLights.update(level, camera, partialTick);
+            RayTracingManager.updateEntityProxies(level, camera);
             RtTemporalResources.updateCamera(level, camera);
         }
         prepareWorldPassRenderState();

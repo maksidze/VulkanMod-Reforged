@@ -17,6 +17,7 @@ import net.vulkanmod.interfaces.ShaderMixed;
 import net.vulkanmod.gl.GlEmulationLog;
 import net.vulkanmod.vulkan.shader.GraphicsPipeline;
 import net.vulkanmod.vulkan.shader.Pipeline;
+import net.vulkanmod.vulkan.raytracing.RayTracingManager;
 import net.vulkanmod.vulkan.shader.descriptor.UBO;
 import net.vulkanmod.vulkan.shader.layout.Uniform;
 import net.vulkanmod.vulkan.shader.parser.GlslConverter;
@@ -40,6 +41,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Supplier;
+
+import static org.lwjgl.vulkan.VK10.VK_SHADER_STAGE_FRAGMENT_BIT;
 
 @Mixin(value = ShaderInstance.class, priority = 900)
 public class ShaderInstanceM implements ShaderMixed {
@@ -67,23 +70,24 @@ public class ShaderInstanceM implements ShaderMixed {
     private VertexFormat pipelineFormat;
 
     private GraphicsPipeline pipeline;
+    private GraphicsPipeline rayTracingEntityPipeline;
     private final Map<VertexFormat, GraphicsPipeline> variantPipelines = new HashMap<>();
     boolean isLegacy = false;
 
     public GraphicsPipeline getPipeline() {
-        return pipeline;
+        return getRayTracingEntityPipeline(this.pipelineFormat);
     }
 
     public GraphicsPipeline getPipeline(VertexFormat drawFormat) {
         if (this.pipeline == null || drawFormat == null || drawFormat.equals(this.pipelineFormat)) {
-            return this.pipeline;
+            return getRayTracingEntityPipeline(drawFormat);
         }
 
         if (this.isLegacy || this.vulkanBindPath == null) {
             return this.pipeline;
         }
 
-        return this.variantPipelines.computeIfAbsent(drawFormat, this::createPipelineVariant);
+        return getRayTracingEntityPipeline(drawFormat);
     }
 
     @Inject(method = "<init>(Lnet/minecraft/server/packs/resources/ResourceProvider;Lnet/minecraft/resources/ResourceLocation;Lcom/mojang/blaze3d/vertex/VertexFormat;)V", at = @At("RETURN"))
@@ -161,6 +165,44 @@ public class ShaderInstanceM implements ShaderMixed {
         }
     }
 
+    private GraphicsPipeline getRayTracingEntityPipeline(VertexFormat drawFormat) {
+        if (!isRayTracedEntityShader(drawFormat) || RayTracingManager.getTopLevelHandle() == 0) {
+            if (this.pipeline == null || drawFormat == null || drawFormat.equals(this.pipelineFormat)) {
+                return this.pipeline;
+            }
+            return this.variantPipelines.computeIfAbsent(drawFormat, this::createPipelineVariant);
+        }
+        if (this.rayTracingEntityPipeline == null) {
+            this.rayTracingEntityPipeline = createRayTracingEntityPipeline(drawFormat);
+        }
+        return this.rayTracingEntityPipeline != null ? this.rayTracingEntityPipeline : this.pipeline;
+    }
+
+    private boolean isRayTracedEntityShader(VertexFormat format) {
+        return RayTracingManager.shouldEnableRayQueryPass()
+                && DefaultVertexFormat.NEW_ENTITY.equals(format)
+                && this.name != null
+                && !this.name.contains("rendertype_entity_shadow")
+                && (this.name.contains("rendertype_entity_")
+                    || this.name.contains("rendertype_item_entity_"));
+    }
+
+    private GraphicsPipeline createRayTracingEntityPipeline(VertexFormat format) {
+        try {
+            String path = "minecraft/core/rendertype_entity_solid_rt/rendertype_entity_solid_rt";
+            Pipeline.Builder builder = new Pipeline.Builder(format, path);
+            builder.parseBindingsJSON();
+            builder.setAccelerationStructure(5, VK_SHADER_STAGE_FRAGMENT_BIT);
+            builder.setDynamicLightBuffer(6, VK_SHADER_STAGE_FRAGMENT_BIT);
+            builder.compileShaders();
+            Initializer.LOGGER.info("RT entity lighting pipeline activated for {}", this.name);
+            return builder.createGraphicsPipeline();
+        } catch (Exception exception) {
+            Initializer.LOGGER.error("Could not create RT entity lighting pipeline for {}", this.name, exception);
+            return null;
+        }
+    }
+
     private static boolean isUsableShaderPath(String namePath) {
         return namePath != null && !namePath.isBlank();
     }
@@ -172,6 +214,9 @@ public class ShaderInstanceM implements ShaderMixed {
     public void close(CallbackInfo ci) {
         if (this.pipeline != null)
             this.pipeline.cleanUp();
+        if (this.rayTracingEntityPipeline != null && this.rayTracingEntityPipeline != this.pipeline) {
+            this.rayTracingEntityPipeline.cleanUp();
+        }
         this.variantPipelines.values().forEach(variantPipeline -> {
             if (variantPipeline != null && variantPipeline != this.pipeline) {
                 variantPipeline.cleanUp();

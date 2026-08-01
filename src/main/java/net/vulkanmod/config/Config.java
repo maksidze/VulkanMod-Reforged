@@ -49,7 +49,7 @@ public class Config {
     public int rayTracingDynamicLightDistance = 20;
     public int rayTracingDynamicMaxLightsPerPixel = 16;
     public boolean rayTracingDynamicLightShadows = true;
-    public int rayTracingDynamicShadowMaxLights = 4;
+    public int rayTracingDynamicShadowMaxLights = 16;
     public int rayTracingDynamicShadowDistance = 32;
     public int rayTracingDynamicLightStrength = 100;
     public boolean rayTracingWaterReflections = true;
@@ -60,6 +60,7 @@ public class Config {
     public int rayTracingSkyDistance = 64;
     public int rayTracingTemporalFrames = 16;
     public int rayTracingSkyDenoiser = 1;
+    public int rayTracingEntityProxyUpdateInterval = 1;
 
     public void write() {
 

@@ -9,6 +9,7 @@ import net.vulkanmod.compat.render.GuiEntityRenderState;
 import net.vulkanmod.render.model.CubeModel;
 import net.vulkanmod.render.vertex.VertexUtil;
 import net.vulkanmod.vulkan.util.ColorUtil;
+import net.vulkanmod.vulkan.raytracing.RtEntityGeometry;
 import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -54,6 +55,7 @@ public abstract class ModelPartM {
                 cubeModel.transformVertices(matrix4f);
 
                 for (ModelPart.Polygon polygon : polygons) {
+                    RtEntityGeometry.captureQuad(polygon.vertices);
                     matrix3f.transform(this.normal.set(polygon.normal));
                     this.normal.normalize();
 
@@ -78,6 +80,7 @@ public abstract class ModelPartM {
                 cubeModel.transformVertices(matrix4f);
 
                 for (ModelPart.Polygon polygon : polygons) {
+                    RtEntityGeometry.captureQuad(polygon.vertices);
                     matrix3f.transform(this.normal.set(polygon.normal));
                     this.normal.normalize();
 

@@ -64,10 +64,12 @@ public abstract class VRenderSystem {
     private static final FloatBuffer textureMatrixFloatView = TextureMatrix.buffer.asFloatBuffer();
     private static final Matrix4f scratchModelView = new Matrix4f();
     private static final Matrix4f scratchMVP = new Matrix4f();
+    private static final Matrix4f scratchRtCameraInverseViewRotation = new Matrix4f();
 
     public static MappedBuffer ChunkOffset = new MappedBuffer(3 * 4);
     public static MappedBuffer WorldOrigin = new MappedBuffer(3 * 4);
     public static MappedBuffer CameraPosition = new MappedBuffer(3 * 4);
+    public static MappedBuffer RtCameraInverseViewRotation = new MappedBuffer(16 * 4);
     public static MappedBuffer SunDirection = new MappedBuffer(3 * 4);
     public static MappedBuffer lightDirection0 = new MappedBuffer(3 * 4);
     public static MappedBuffer lightDirection1 = new MappedBuffer(3 * 4);
@@ -151,6 +153,10 @@ public abstract class VRenderSystem {
         return modelViewMatrix;
     }
 
+    public static MappedBuffer getRtCameraInverseViewRotation() {
+        return RtCameraInverseViewRotation;
+    }
+
     public static MappedBuffer getProjectionMatrix() {
         return projectionMatrix;
     }
@@ -179,6 +185,13 @@ public abstract class VRenderSystem {
         VUtil.UNSAFE.putFloat(ptr, x);
         VUtil.UNSAFE.putFloat(ptr + 4, y);
         VUtil.UNSAFE.putFloat(ptr + 8, z);
+    }
+
+    public static void setRtCameraInverseViewRotation(Matrix4f viewMatrix) {
+        scratchRtCameraInverseViewRotation.set(viewMatrix)
+                .m30(0.0F).m31(0.0F).m32(0.0F)
+                .invert()
+                .get(RtCameraInverseViewRotation.buffer);
     }
 
     public static void setSunDirection(float x, float y, float z) {

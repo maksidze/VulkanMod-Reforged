@@ -1,5 +1,10 @@
 package net.vulkanmod.vulkan.raytracing;
 
+import net.minecraft.client.Camera;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import net.vulkanmod.Initializer;
 import net.vulkanmod.render.chunk.RenderSection;
 import net.vulkanmod.vulkan.Synchronization;
@@ -52,6 +57,10 @@ public final class RayTracingManager {
     private final Set<RenderSection> pendingRemovals =
             Collections.newSetFromMap(new IdentityHashMap<>());
     private final Map<RenderSection, AccelerationStructure> bottomLevels = new IdentityHashMap<>();
+    private final Map<Entity, RenderSection> entityProxySections = new IdentityHashMap<>();
+    private final Map<Entity, long[]> entityProxyBounds = new IdentityHashMap<>();
+    private final Map<Entity, Integer> entityProxyMeshHashes = new IdentityHashMap<>();
+    private int entityProxyUpdateCounter;
 
     private AccelerationStructure topLevel;
     private RayTracingBuffer uvBuffer;
@@ -212,6 +221,152 @@ public final class RayTracingManager {
         if (isEnabled()) {
             INSTANCE.processPendingBuildsInternal();
         }
+    }
+
+    /**
+     * Queues conservative AABB proxies for nearby entities. This is an
+     * intermediate scene-geometry layer: it makes entities participate in
+     * RT visibility immediately, while the vanilla entity vertex stream is
+     * still owned by Minecraft's renderer.
+     */
+    public static void updateEntityProxies(ClientLevel level, Camera camera) {
+        if (!isEnabled() || level == null || camera == null) {
+            return;
+        }
+        INSTANCE.updateEntityProxiesInternal(level, camera);
+    }
+
+    private void updateEntityProxiesInternal(ClientLevel level, Camera camera) {
+        int updateInterval = Math.max(
+                1,
+                Math.min(20, Initializer.CONFIG.rayTracingEntityProxyUpdateInterval)
+        );
+        if ((entityProxyUpdateCounter++ % updateInterval) != 0) {
+            return;
+        }
+        double maxDistance = 96.0;
+        double maxDistanceSquared = maxDistance * maxDistance;
+        Vec3 cameraPosition = camera.getPosition();
+        Set<Entity> visible = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Entity entity : level.entitiesForRendering()) {
+            if (entity.isRemoved() || entity == camera.getEntity()) {
+                continue;
+            }
+            AABB box = entity.getBoundingBox();
+            if (box.getCenter().distanceToSqr(cameraPosition) > maxDistanceSquared
+                    || box.getXsize() <= 0.01
+                    || box.getYsize() <= 0.01
+                    || box.getZsize() <= 0.01) {
+                continue;
+            }
+            visible.add(entity);
+            RenderSection proxy = entityProxySections.computeIfAbsent(entity, ignored ->
+                    new RenderSection(-entity.getId() - 1,
+                            floorSection(box.minX), floorSection(box.minY), floorSection(box.minZ)));
+            int sectionX = floorSection(box.minX);
+            int sectionY = floorSection(box.minY);
+            int sectionZ = floorSection(box.minZ);
+            if (proxy.xOffset != sectionX || proxy.yOffset != sectionY || proxy.zOffset != sectionZ) {
+                proxy.setOrigin(sectionX, sectionY, sectionZ);
+            }
+            RtEntityGeometry.Snapshot mesh = RtEntityGeometry.get(entity);
+            int meshHash = mesh != null ? java.util.Arrays.hashCode(mesh.positions()) : 0;
+            long[] bounds = new long[]{
+                    Double.doubleToLongBits(box.minX), Double.doubleToLongBits(box.minY), Double.doubleToLongBits(box.minZ),
+                    Double.doubleToLongBits(box.maxX), Double.doubleToLongBits(box.maxY), Double.doubleToLongBits(box.maxZ)
+            };
+            long[] previousBounds = entityProxyBounds.put(entity, bounds);
+            Integer previousMeshHash = entityProxyMeshHashes.put(entity, meshHash);
+            if (previousBounds != null && java.util.Arrays.equals(previousBounds, bounds)
+                    && previousMeshHash != null && previousMeshHash == meshHash
+                    && proxy.xOffset == sectionX && proxy.yOffset == sectionY && proxy.zOffset == sectionZ) {
+                continue;
+            }
+            ByteBuffer proxyGeometry = mesh != null
+                    ? createEntityMeshGeometry(mesh, sectionX, sectionY, sectionZ)
+                    : createEntityProxyGeometry(box, sectionX, sectionY, sectionZ);
+            try {
+                queueTerrainSection(proxy, List.of(proxyGeometry),
+                        mesh != null ? mesh.vertexCount() : 24, COMPRESSED_TERRAIN_STRIDE);
+            } finally {
+                MemoryUtil.memFree(proxyGeometry);
+            }
+        }
+        for (var iterator = entityProxySections.entrySet().iterator(); iterator.hasNext(); ) {
+            var entry = iterator.next();
+            if (!visible.contains(entry.getKey())) {
+                removeSection(entry.getValue());
+                entityProxyBounds.remove(entry.getKey());
+                entityProxyMeshHashes.remove(entry.getKey());
+                RtEntityGeometry.remove(entry.getKey());
+                iterator.remove();
+            }
+        }
+    }
+
+    private static int floorSection(double coordinate) {
+        return Math.floorDiv((int) Math.floor(coordinate), 16) * 16;
+    }
+
+    private static ByteBuffer createEntityProxyGeometry(AABB box, int sectionX, int sectionY, int sectionZ) {
+        final int vertexCount = 24;
+        ByteBuffer buffer = MemoryUtil.memAlloc(vertexCount * COMPRESSED_TERRAIN_STRIDE)
+                .order(ByteOrder.nativeOrder());
+        float minX = (float) box.minX;
+        float minY = (float) box.minY;
+        float minZ = (float) box.minZ;
+        float maxX = (float) box.maxX;
+        float maxY = (float) box.maxY;
+        float maxZ = (float) box.maxZ;
+        float[][] corners = {
+                {minX, minY, minZ}, {maxX, minY, minZ}, {maxX, maxY, minZ}, {minX, maxY, minZ},
+                {maxX, minY, maxZ}, {minX, minY, maxZ}, {minX, maxY, maxZ}, {maxX, maxY, maxZ}
+        };
+        int[][] faces = {
+                {0, 1, 2, 3, 0, 0, -127}, {5, 4, 7, 6, 0, 0, 127},
+                {1, 4, 7, 2, 127, 0, 0}, {5, 0, 3, 6, -127, 0, 0},
+                {3, 2, 7, 6, 0, 127, 0}, {5, 4, 1, 0, 0, -127, 0}
+        };
+        for (int[] face : faces) {
+            for (int corner = 0; corner < 4; corner++) {
+                float[] position = corners[face[corner]];
+                buffer.putShort((short) Math.round((position[0] - sectionX - POSITION_OFFSET) / POSITION_SCALE));
+                buffer.putShort((short) Math.round((position[1] - sectionY - POSITION_OFFSET) / POSITION_SCALE));
+                buffer.putShort((short) Math.round((position[2] - sectionZ - POSITION_OFFSET) / POSITION_SCALE));
+                buffer.putShort((short) (15 << 12));
+                buffer.putInt(0xFFFFFFFF);
+                buffer.putShort((short) ((corner == 1 || corner == 2) ? 32767 : 0));
+                buffer.putShort((short) ((corner >= 2) ? 32767 : 0));
+                buffer.putInt(packProxyNormal(face[4], face[5], face[6]));
+            }
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    private static ByteBuffer createEntityMeshGeometry(
+            RtEntityGeometry.Snapshot mesh, int sectionX, int sectionY, int sectionZ
+    ) {
+        ByteBuffer buffer = MemoryUtil.memAlloc(mesh.vertexCount() * COMPRESSED_TERRAIN_STRIDE)
+                .order(ByteOrder.nativeOrder());
+        float[] positions = mesh.positions();
+        for (int vertex = 0; vertex < mesh.vertexCount(); vertex++) {
+            int positionOffset = vertex * 3;
+            buffer.putShort((short) Math.round((positions[positionOffset] - sectionX - POSITION_OFFSET) / POSITION_SCALE));
+            buffer.putShort((short) Math.round((positions[positionOffset + 1] - sectionY - POSITION_OFFSET) / POSITION_SCALE));
+            buffer.putShort((short) Math.round((positions[positionOffset + 2] - sectionZ - POSITION_OFFSET) / POSITION_SCALE));
+            buffer.putShort((short) (15 << 12));
+            buffer.putInt(0xFFFFFFFF);
+            buffer.putShort((short) 0);
+            buffer.putShort((short) 0);
+            buffer.putInt(0);
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    private static int packProxyNormal(int x, int y, int z) {
+        return (x & 0xFF) | ((y & 0xFF) << 8) | ((z & 0xFF) << 16);
     }
 
     public static long getTopLevelHandle() {
