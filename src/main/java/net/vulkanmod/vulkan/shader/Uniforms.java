@@ -46,7 +46,7 @@ public class Uniforms {
         });
         vec1i_uniformMap.put("RtDirectLighting", () -> Initializer.CONFIG.rayTracingDirectLighting ? 1 : 0);
         vec1i_uniformMap.put("RtViewMode", () -> Math.max(0, Math.min(2, Initializer.CONFIG.rayTracingViewMode)));
-        vec1i_uniformMap.put("RtDebugView", () -> Math.max(0, Math.min(11, Initializer.CONFIG.rayTracingDebugView)));
+        vec1i_uniformMap.put("RtDebugView", () -> Math.max(0, Math.min(14, Initializer.CONFIG.rayTracingDebugView)));
         vec1i_uniformMap.put("RtDynamicLightShadows", () -> Initializer.CONFIG.rayTracingDynamicLightShadows ? 1 : 0);
         vec1i_uniformMap.put("RtDynamicMaxLightsPerPixel", () -> Math.max(
                 0,
@@ -61,6 +61,10 @@ public class Uniforms {
         vec1i_uniformMap.put("BlockReflections", () -> Initializer.CONFIG.rayTracingBlockReflections ? 1 : 0);
         vec1i_uniformMap.put("RtMirrorSunlight", () -> Initializer.CONFIG.rayTracingMirrorSunlight ? 1 : 0);
         vec1i_uniformMap.put("RtIndirectLighting", () -> Initializer.CONFIG.rayTracingIndirectLighting ? 1 : 0);
+        vec1i_uniformMap.put("RtIndirectLightRays", () -> Math.max(
+                1,
+                Math.min(8, Initializer.CONFIG.rayTracingIndirectLightRays)
+        ));
         vec1i_uniformMap.put("RtSkyOcclusion", () -> Initializer.CONFIG.rayTracingSkyOcclusion ? 1 : 0);
         vec1i_uniformMap.put("RtSkyRays", () -> {
             int rays = Initializer.CONFIG.rayTracingSkyRays;

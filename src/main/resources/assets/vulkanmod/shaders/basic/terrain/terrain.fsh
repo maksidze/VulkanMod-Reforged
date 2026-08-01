@@ -30,6 +30,7 @@ layout(binding = 1) uniform UBO {
     int RtIndirectLighting;
     float RtIndirectLightStrength;
     float RtIndirectLightDistance;
+    int RtIndirectLightRays;
     float FogStart;
     float FogEnd;
     float AlphaCutout;

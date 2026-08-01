@@ -32,6 +32,7 @@ layout(binding = 1) uniform UBO {
     int RtIndirectLighting;
     float RtIndirectLightStrength;
     float RtIndirectLightDistance;
+    int RtIndirectLightRays;
     float FogStart;
     float FogEnd;
     float AlphaCutout;
@@ -443,13 +444,26 @@ vec3 evaluateDynamicRtLights(
     out uint shadowRayCount
 );
 
+// Returns the radiance from local lights after one idealised, deliberately
+// slightly rough, reflection at a metallic block.  The rough lobe is important:
+// block lights are points, so a perfectly sharp mirror would almost never be
+// sampled by the single indirect-light ray available per pixel.
+vec3 evaluateReflectedDynamicRtLights(
+    vec3 position,
+    vec3 normal,
+    vec3 incomingDirection,
+    bool traceShadows
+);
+
 vec3 traceReflection(
     vec3 origin,
     vec3 direction,
     float maximumDistance,
-    out float normalizedHitDistance
+    out float normalizedHitDistance,
+    out vec3 reflectedDynamicLight
 ) {
     normalizedHitDistance = -1.0;
+    reflectedDynamicLight = vec3(0.0);
     rayQueryEXT query;
     rayQueryInitializeEXT(
         query,
@@ -554,14 +568,27 @@ vec3 traceReflection(
             + rtBlockColor() * (0.90 * blockLevel * BlockLightStrength);
     uint ignoredEvaluatedLights;
     uint ignoredShadowRays;
-    hitLighting += evaluateDynamicRtLights(
-        hitPosition,
-        hitNormal,
-        hitCutout,
-        false,
-        ignoredEvaluatedLights,
-        ignoredShadowRays
-    );
+    if (hitMaterial == RT_MATERIAL_REFLECTIVE) {
+        // A ray that reaches a mirror receives light only from the reflected
+        // direction. This makes the same path work both in a visible mirror and
+        // in the diffuse one-bounce GI path used to illuminate nearby blocks.
+        reflectedDynamicLight = evaluateReflectedDynamicRtLights(
+            hitPosition,
+            hitNormal,
+            direction,
+            true
+        );
+        hitLighting += reflectedDynamicLight;
+    } else {
+        hitLighting += evaluateDynamicRtLights(
+            hitPosition,
+            hitNormal,
+            hitCutout,
+            false,
+            ignoredEvaluatedLights,
+            ignoredShadowRays
+        );
+    }
     vec3 reflectedSurface = hitColor * hitLighting
         + hitColor * hitEmission * rtEmissionBoost(hitMaterial);
     float distanceFade = smoothstep(
@@ -678,21 +705,44 @@ vec3 traceMirrorSunlight(vec3 position, vec3 receiverNormal) {
     return redirectedLight;
 }
 
-vec3 traceIndirectLight(vec3 position, vec3 normal) {
-    // A cosine-distributed ray estimates the incoming irradiance for a Lambertian
-    // surface. The hit shader evaluates the hit block's albedo, sun, skylight,
-    // emission and registered dynamic lights, preserving coloured bounces.
-    uint randomState = uint(gl_FragCoord.x) * 0x68BC21EBu
+vec3 traceIndirectLight(vec3 position, vec3 normal, bool mirrorDynamicOnly) {
+    // A small stratified set makes a narrow "surface -> mirror -> torch" path
+    // show up promptly instead of waiting for a single random ray to find it.
+    // This is opt-in and its RGB result is still temporally accumulated below.
+    int indirectSampleCount = clamp(RtIndirectLightRays, 1, 8);
+    uint baseRandomState = uint(gl_FragCoord.x) * 0x68BC21EBu
         ^ uint(gl_FragCoord.y) * 0x02E5BE93u
         ^ uint(RtFrameIndex) * 0x9E3779B9u;
-    vec3 direction = rtCosineHemisphere(normal, randomState);
-    float ignoredHitDistance;
-    return traceReflection(
-        offsetRayOrigin(position + normal * 0.04, normal),
-        direction,
-        RtIndirectLightDistance,
-        ignoredHitDistance
-    );
+    vec3 accumulatedLight = vec3(0.0);
+    vec3 rayOrigin = offsetRayOrigin(position + normal * 0.04, normal);
+    for (int sampleIndex = 0; sampleIndex < indirectSampleCount; sampleIndex++) {
+        uint randomState = baseRandomState
+            ^ (uint(sampleIndex + 1) * 0x85EBCA6Bu);
+        vec3 direction = rtCosineHemisphere(normal, randomState);
+        float ignoredHitDistance;
+        vec3 reflectedDynamicLight;
+        vec3 sampleLight = traceReflection(
+            rayOrigin,
+            direction,
+            RtIndirectLightDistance,
+            ignoredHitDistance,
+            reflectedDynamicLight
+        );
+        if (mirrorDynamicOnly) {
+            // The diagnostic reports the unaveraged energy so an occasional
+            // valid mirror path is obvious instead of nearly black.
+            accumulatedLight += reflectedDynamicLight;
+        } else {
+            // A point emitter is sampled through a finite rough mirror lobe.
+            // Compensate the sparse one-bounce estimate so torch colour remains
+            // visible after the temporal average, rather than being diluted by
+            // the samples that did not hit the reflecting block.
+            accumulatedLight += sampleLight + reflectedDynamicLight * 3.0;
+        }
+    }
+    return mirrorDynamicOnly
+        ? accumulatedLight
+        : accumulatedLight / float(indirectSampleCount);
 }
 
 vec3 filterPreviousIndirectLight(
@@ -1014,6 +1064,83 @@ vec3 evaluateDynamicRtLights(
     return accumulatedLight;
 }
 
+vec3 evaluateReflectedDynamicRtLights(
+    vec3 position,
+    vec3 normal,
+    vec3 incomingDirection,
+    bool traceShadows
+) {
+    vec3 accumulatedLight = vec3(0.0);
+    vec3 reflectedDirection = normalize(reflect(incomingDirection, normal));
+    ivec3 surfaceCell = ivec3(floor(position * (1.0 / 32.0)));
+    uint totalLightCount = RtDynamicLightHeader.x;
+
+    for (int cellOffsetIndex = 0; cellOffsetIndex < 27; cellOffsetIndex++) {
+        int packedRange = rtFindDynamicCell(
+            surfaceCell + RT_DYNAMIC_CELL_OFFSETS[cellOffsetIndex]
+        );
+        if (packedRange == -1) {
+            continue;
+        }
+        uint rangeBits = uint(packedRange);
+        uint lightStart = rangeBits & 0xFFFFFu;
+        uint lightCount = rangeBits >> 20u;
+        for (uint cellLightIndex = 0u; cellLightIndex < lightCount; cellLightIndex++) {
+            uint lightIndex = lightStart + cellLightIndex;
+            if (lightIndex >= totalLightCount) {
+                break;
+            }
+
+            RtPointLight pointLight = RtDynamicLights[lightIndex];
+            vec3 mirrorToLight = pointLight.positionRadius.xyz - position;
+            float distanceToLight = length(mirrorToLight);
+            float lightRadius = pointLight.positionRadius.w;
+            if (distanceToLight <= 0.02 || distanceToLight >= lightRadius || lightRadius <= 0.0) {
+                continue;
+            }
+
+            vec3 lightDirection = mirrorToLight / distanceToLight;
+            // Iron blocks are treated as a polished but not mathematically
+            // perfect mirror. This produces a stable, visible torch bounce with
+            // one temporal sample while retaining a clear reflected direction.
+            float specularLobe = pow(
+                max(dot(reflectedDirection, lightDirection), 0.0),
+                4.0
+            );
+            if (specularLobe <= 0.001) {
+                continue;
+            }
+
+            float radialFalloff = max(1.0 - distanceToLight / lightRadius, 0.0);
+            float attenuation = radialFalloff * radialFalloff
+                * (1.5 / (1.0 + 0.018 * distanceToLight * distanceToLight));
+            float contribution = specularLobe * attenuation
+                * pointLight.colorIntensity.a * RtDynamicLightStrength;
+            if (contribution <= 0.002) {
+                continue;
+            }
+
+            bool shadowed = false;
+            if (traceShadows && RtDynamicLightShadows != 0) {
+                vec3 originNormal = dot(normal, lightDirection) < 0.0 ? -normal : normal;
+                vec3 lightRayOrigin = offsetRayOrigin(
+                    position + originNormal * 0.04 + lightDirection * 0.01,
+                    originNormal
+                );
+                shadowed = traceOcclusionRange(
+                    lightRayOrigin,
+                    lightDirection,
+                    max(distanceToLight - 0.55, 0.03)
+                );
+            }
+            if (!shadowed) {
+                accumulatedLight += pointLight.colorIntensity.rgb * contribution;
+            }
+        }
+    }
+    return accumulatedLight;
+}
+
 void main() {
     vec4 texel = texture(Sampler0, texCoord0);
     vec4 color = texel * vertexColor;
@@ -1076,7 +1203,10 @@ void main() {
             && RtDebugView != 6
             && RtDebugView != 9
             && RtDebugView != 10
-            && RtDebugView != 11) {
+            && RtDebugView != 11
+            && RtDebugView != 12
+            && RtDebugView != 13
+            && RtDebugView != 14) {
         vec3 surfaceNormal = length(worldNormal) > 0.5
             ? normalize(worldNormal)
             : normalize(cross(dFdx(worldPosition), dFdy(worldPosition)));
@@ -1087,11 +1217,13 @@ void main() {
         vec3 reflectionDirection = normalize(reflect(incident, surfaceNormal));
         vec3 reflectionOrigin = offsetRayOrigin(worldPosition + surfaceNormal * 0.035, surfaceNormal);
         float normalizedReflectionDistance;
+        vec3 ignoredReflectedDynamicLight;
         vec3 reflectedColor = traceReflection(
             reflectionOrigin,
             reflectionDirection,
             WaterReflectionDistance,
-            normalizedReflectionDistance
+            normalizedReflectionDistance,
+            ignoredReflectedDynamicLight
         );
         if (RtDebugView == 8) {
             fragColor = vec4(rtDistanceDebugColor(normalizedReflectionDistance), 1.0);
@@ -1117,6 +1249,21 @@ void main() {
     vec3 geometricNormal = length(worldNormal) > 0.5 ? normalize(worldNormal) : derivativeNormal;
     if (dot(derivativeNormal, geometricNormal) < 0.0) {
         derivativeNormal = -derivativeNormal;
+    }
+    if (RtDebugView == 12) {
+        vec3 mirrorSunlight = traceMirrorSunlight(worldPosition, geometricNormal);
+        fragColor = vec4(mirrorSunlight / (vec3(1.0) + mirrorSunlight), 1.0);
+        return;
+    }
+    if (RtDebugView == 13) {
+        vec3 mirrorDynamicLight = traceIndirectLight(worldPosition, geometricNormal, true);
+        fragColor = vec4(mirrorDynamicLight / (vec3(1.0) + mirrorDynamicLight), 1.0);
+        return;
+    }
+    if (RtDebugView == 14) {
+        vec3 indirectLight = traceIndirectLight(worldPosition, geometricNormal, false);
+        fragColor = vec4(indirectLight / (vec3(1.0) + indirectLight), 1.0);
+        return;
     }
     bool rtLighting = RtDirectLighting != 0 || rtOnly;
     bool twoSidedSurface = TerrainLayer == 1
@@ -1205,7 +1352,7 @@ void main() {
         }
         if (RtIndirectLighting != 0 && !twoSidedSurface) {
             vec3 indirectLight = accumulateIndirectLight(
-                traceIndirectLight(worldPosition, geometricNormal),
+                traceIndirectLight(worldPosition, geometricNormal, false),
                 vertexDistance
             );
             lighting += indirectLight

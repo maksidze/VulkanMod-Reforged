@@ -53,6 +53,7 @@
             { "name": "RtIndirectLighting", "type": "int", "count": 1, "values": [ 1 ] },
             { "name": "RtIndirectLightStrength", "type": "float", "count": 1, "values": [ 0.35 ] },
             { "name": "RtIndirectLightDistance", "type": "float", "count": 1, "values": [ 48.0 ] },
+            { "name": "RtIndirectLightRays", "type": "int", "count": 1, "values": [ 2 ] },
             { "name": "FogStart", "type": "float", "count": 1, "values": [ 0.0 ] },
             { "name": "FogEnd", "type": "float", "count": 1, "values": [ 1.0 ] },
             { "name": "AlphaCutout", "type": "float", "count": 1, "values": [ 1.0 ] },

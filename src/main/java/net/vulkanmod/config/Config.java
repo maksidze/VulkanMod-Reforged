@@ -65,6 +65,7 @@ public class Config {
     public boolean rayTracingIndirectLighting = false;
     public int rayTracingIndirectLightStrength = 35;
     public int rayTracingIndirectLightDistance = 48;
+    public int rayTracingIndirectLightRays = 2;
     public boolean rayTracingSkyOcclusion = true;
     public int rayTracingSkyRays = 1;
     public int rayTracingSkyDistance = 64;

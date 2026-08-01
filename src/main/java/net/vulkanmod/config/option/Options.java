@@ -427,7 +427,7 @@ public abstract class Options {
 
         CyclingOption<Integer> debugView = new CyclingOption<>(
                 Component.translatable("vulkanmod.options.rayTracing.debugView"),
-                new Integer[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+                new Integer[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
                 value -> {
                     config.rayTracingDebugView = sanitizeRtDebugView(value);
                     if (minecraft.levelRenderer != null) {
@@ -449,6 +449,9 @@ public abstract class Options {
                     case 9 -> "vulkanmod.options.rayTracing.debugView.dynamicLights";
                     case 10 -> "vulkanmod.options.rayTracing.debugView.dynamicShadowBudget";
                     case 11 -> "vulkanmod.options.rayTracing.debugView.skyOcclusion";
+                    case 12 -> "vulkanmod.options.rayTracing.debugView.mirrorSunlight";
+                    case 13 -> "vulkanmod.options.rayTracing.debugView.mirrorDynamicLights";
+                    case 14 -> "vulkanmod.options.rayTracing.debugView.indirectLighting";
                     default -> "options.off";
                 }))
                 .setTooltip(Component.translatable("vulkanmod.options.rayTracing.debugView.tooltip"))
@@ -911,9 +914,21 @@ public abstract class Options {
                 .setImpact(PerformanceImpact.HIGH)
                 .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && indirectLighting.getNewValue());
 
+        CyclingOption<Integer> indirectLightRays = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.indirectLightRays"),
+                new Integer[]{1, 2, 4, 8},
+                value -> config.rayTracingIndirectLightRays = Math.max(1, Math.min(8, value)),
+                () -> Math.max(1, Math.min(8, config.rayTracingIndirectLightRays))
+        );
+        indirectLightRays
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.indirectLightRays.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && indirectLighting.getNewValue());
+
         indirectLighting.setOnChange(() -> {
             indirectLightStrength.updateActiveState();
             indirectLightDistance.updateActiveState();
+            indirectLightRays.updateActiveState();
         });
 
         return new OptionBlock[]{
@@ -952,7 +967,8 @@ public abstract class Options {
                         mirrorSunlightDistance,
                         indirectLighting,
                         indirectLightStrength,
-                        indirectLightDistance
+                        indirectLightDistance,
+                        indirectLightRays
                 })
         };
     }
@@ -985,7 +1001,7 @@ public abstract class Options {
     }
 
     private static int sanitizeRtDebugView(int value) {
-        return Math.max(0, Math.min(11, value));
+        return Math.max(0, Math.min(14, value));
     }
 
     private static int sanitizeDynamicLightCount(int value) {
