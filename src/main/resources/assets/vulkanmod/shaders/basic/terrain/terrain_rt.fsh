@@ -201,10 +201,18 @@ bool traceOcclusionRange(vec3 origin, vec3 direction, float maximumDistance) {
         uint primitiveIndex = rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
         uint uvBase = rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
         uint opaquePrimitiveCount = PackedRtUvs[uvBase];
+        uint triangleUvBase = rtHitBase(uvBase, primitiveIndex);
+        int candidateMaterial = unpackRtMaterial(PackedRtUvs[triangleUvBase + 3u]);
+
+        // Fire is visible emissive geometry, not a solid occluder. In particular,
+        // it must not intercept the shadow ray aimed at its own point light.
+        if (candidateMaterial == RT_MATERIAL_FIRE) {
+            continue;
+        }
+
         bool acceptsIntersection = primitiveIndex < opaquePrimitiveCount;
 
         if (!acceptsIntersection) {
-            uint triangleUvBase = rtHitBase(uvBase, primitiveIndex);
             vec2 uv0 = unpackRtUv(PackedRtUvs[triangleUvBase]);
             vec2 uv1 = unpackRtUv(PackedRtUvs[triangleUvBase + 1u]);
             vec2 uv2 = unpackRtUv(PackedRtUvs[triangleUvBase + 2u]);
