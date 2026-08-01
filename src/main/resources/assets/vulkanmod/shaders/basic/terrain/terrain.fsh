@@ -22,6 +22,11 @@ layout(binding = 1) uniform UBO {
     int WaterReflections;
     float WaterReflectionStrength;
     float WaterReflectionDistance;
+    int BlockReflections;
+    float BlockReflectionStrength;
+    int RtIndirectLighting;
+    float RtIndirectLightStrength;
+    float RtIndirectLightDistance;
     float FogStart;
     float FogEnd;
     float AlphaCutout;

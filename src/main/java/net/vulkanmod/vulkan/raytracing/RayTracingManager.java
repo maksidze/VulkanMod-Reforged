@@ -47,6 +47,7 @@ public final class RayTracingManager {
     private static final int HIT_ATTRIBUTE_ENTRY_BYTES = Integer.BYTES;
     private static final int HIT_ATTRIBUTE_STRIDE = 5;
     private static final int DEFAULT_UV_BUFFER_MIB = 64;
+    private static final int SECTION_REMOVAL_GRACE_FRAMES = 12;
 
     private static RayTracingManager INSTANCE;
     private static boolean loggedGeometrySample;
@@ -56,6 +57,7 @@ public final class RayTracingManager {
     private final Map<RenderSection, PendingGeometry> pendingBuilds = new IdentityHashMap<>();
     private final Set<RenderSection> pendingRemovals =
             Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Map<RenderSection, Integer> pendingRemovalGraceFrames = new IdentityHashMap<>();
     private final Map<RenderSection, AccelerationStructure> bottomLevels = new IdentityHashMap<>();
     private final Map<Entity, RenderSection> entityProxySections = new IdentityHashMap<>();
     private final Map<Entity, long[]> entityProxyBounds = new IdentityHashMap<>();
@@ -150,6 +152,7 @@ public final class RayTracingManager {
                 queued.free();
             }
             INSTANCE.pendingRemovals.remove(section);
+            INSTANCE.pendingRemovalGraceFrames.remove(section);
             return;
         }
 
@@ -186,6 +189,7 @@ public final class RayTracingManager {
             old.free();
         }
         INSTANCE.pendingRemovals.remove(section);
+        INSTANCE.pendingRemovalGraceFrames.remove(section);
     }
 
     public static void removeSection(RenderSection section) {
@@ -202,8 +206,10 @@ public final class RayTracingManager {
         }
         if (INSTANCE.bottomLevels.containsKey(section)) {
             INSTANCE.pendingRemovals.add(section);
+            INSTANCE.pendingRemovalGraceFrames.put(section, SECTION_REMOVAL_GRACE_FRAMES);
         } else {
             INSTANCE.pendingRemovals.remove(section);
+            INSTANCE.pendingRemovalGraceFrames.remove(section);
         }
     }
 
@@ -215,6 +221,10 @@ public final class RayTracingManager {
         INSTANCE.pendingBuilds.values().forEach(PendingGeometry::free);
         INSTANCE.pendingBuilds.clear();
         INSTANCE.pendingRemovals.addAll(INSTANCE.bottomLevels.keySet());
+        INSTANCE.pendingRemovalGraceFrames.clear();
+        for (RenderSection section : INSTANCE.pendingRemovals) {
+            INSTANCE.pendingRemovalGraceFrames.put(section, 0);
+        }
     }
 
     public static void processPendingBuilds() {
@@ -277,8 +287,16 @@ public final class RayTracingManager {
             };
             long[] previousBounds = entityProxyBounds.put(entity, bounds);
             Integer previousMeshHash = entityProxyMeshHashes.put(entity, meshHash);
+            boolean meshBecameAvailable = meshHash != 0
+                    && (previousMeshHash == null || previousMeshHash == 0);
+            // Posed ModelPart coordinates change every animation frame. Rebuilding
+            // an entity BLAS (and consequently the complete TLAS) for those tiny
+            // pose changes made thin mob geometry alternate between two-frame-old
+            // snapshots in reflections. Keep the last complete pose while the
+            // entity bounds are stationary; movement still refreshes the mesh,
+            // and the first captured mesh still replaces the initial AABB proxy.
             if (previousBounds != null && java.util.Arrays.equals(previousBounds, bounds)
-                    && previousMeshHash != null && previousMeshHash == meshHash
+                    && !meshBecameAvailable
                     && proxy.xOffset == sectionX && proxy.yOffset == sectionY && proxy.zOffset == sectionZ) {
                 continue;
             }
@@ -337,7 +355,7 @@ public final class RayTracingManager {
                 buffer.putInt(0xFFFFFFFF);
                 buffer.putShort((short) ((corner == 1 || corner == 2) ? 32767 : 0));
                 buffer.putShort((short) ((corner >= 2) ? 32767 : 0));
-                buffer.putInt(packProxyNormal(face[4], face[5], face[6]));
+                buffer.putInt(packProxyNormal(face[4], face[5], face[6]) | (7 << 24));
             }
         }
         buffer.flip();
@@ -359,7 +377,10 @@ public final class RayTracingManager {
             buffer.putInt(0xFFFFFFFF);
             buffer.putShort((short) 0);
             buffer.putShort((short) 0);
-            buffer.putInt(0);
+            // Entity geometry has no terrain-atlas UVs. Mark it explicitly so
+            // reflection shading never samples an unrelated (or transparent)
+            // texel from Sampler0.
+            buffer.putInt(7 << 24);
         }
         buffer.flip();
         return buffer;
@@ -402,7 +423,17 @@ public final class RayTracingManager {
     }
 
     private void processPendingBuildsInternal() {
-        if (this.pendingBuilds.isEmpty() && this.pendingRemovals.isEmpty()) {
+        Set<RenderSection> readyRemovals = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (RenderSection section : this.pendingRemovals) {
+            int remainingFrames = this.pendingRemovalGraceFrames.getOrDefault(section, 0);
+            if (remainingFrames <= 0) {
+                readyRemovals.add(section);
+            } else {
+                this.pendingRemovalGraceFrames.put(section, remainingFrames - 1);
+            }
+        }
+
+        if (this.pendingBuilds.isEmpty() && readyRemovals.isEmpty()) {
             return;
         }
 
@@ -418,14 +449,15 @@ public final class RayTracingManager {
         try {
             destroyTopLevel();
 
-            for (RenderSection section : this.pendingRemovals) {
+            for (RenderSection section : readyRemovals) {
                 AccelerationStructure old = this.bottomLevels.remove(section);
                 if (old != null) {
                     old.destroy();
                     removed++;
                 }
+                this.pendingRemovals.remove(section);
+                this.pendingRemovalGraceFrames.remove(section);
             }
-            this.pendingRemovals.clear();
 
             if (this.pendingBuilds.isEmpty()) {
                 if (!this.bottomLevels.isEmpty()) {
@@ -1043,6 +1075,7 @@ public final class RayTracingManager {
         this.pendingBuilds.values().forEach(PendingGeometry::free);
         this.pendingBuilds.clear();
         this.pendingRemovals.clear();
+        this.pendingRemovalGraceFrames.clear();
     }
 
     private void cleanUp() {

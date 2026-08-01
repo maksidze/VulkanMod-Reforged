@@ -49,6 +49,7 @@ public abstract class PipelineManager {
                     || renderType == TerrainRenderType.CUTOUT
                     || (renderType == TerrainRenderType.TRANSLUCENT
                         && (Initializer.CONFIG.rayTracingWaterReflections
+                            || Initializer.CONFIG.rayTracingBlockReflections
                             || Initializer.CONFIG.rayTracingViewMode == 1
                             || Initializer.CONFIG.rayTracingDebugView != 0));
             if (tracedLayer && terrainShaderRt != null && RayTracingManager.getTopLevelHandle() != 0) {
@@ -100,6 +101,8 @@ public abstract class PipelineManager {
             pipelineBuilder.addStorageImage(7, RtTemporalResources.CURRENT_IMAGE_SLOT);
             pipelineBuilder.addStorageImage(8, RtTemporalResources.PREVIOUS_IMAGE_SLOT);
             pipelineBuilder.addStorageImage(9, RtTemporalResources.DEPTH_OWNER_IMAGE_SLOT);
+            pipelineBuilder.addStorageImage(10, RtTemporalResources.INDIRECT_CURRENT_IMAGE_SLOT);
+            pipelineBuilder.addStorageImage(11, RtTemporalResources.INDIRECT_PREVIOUS_IMAGE_SLOT);
         }
 
         SPIRVUtils.SPIRV vertShaderSPIRV = compileShaderAbsoluteFile(String.format("%s%s.vsh", shaderPath, pathV), SPIRVUtils.ShaderKind.VERTEX_SHADER);

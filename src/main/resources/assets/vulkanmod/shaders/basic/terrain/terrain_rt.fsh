@@ -24,6 +24,11 @@ layout(binding = 1) uniform UBO {
     int WaterReflections;
     float WaterReflectionStrength;
     float WaterReflectionDistance;
+    int BlockReflections;
+    float BlockReflectionStrength;
+    int RtIndirectLighting;
+    float RtIndirectLightStrength;
+    float RtIndirectLightDistance;
     float FogStart;
     float FogEnd;
     float AlphaCutout;
@@ -60,6 +65,8 @@ layout(std430, binding = 6) readonly buffer RtDynamicLightStorage {
 layout(rgba16f, binding = 7) uniform image2D RtTemporalCurrent;
 layout(rgba16f, binding = 8) uniform readonly image2D RtTemporalPrevious;
 layout(r32ui, binding = 9) uniform uimage2D RtTemporalDepthOwner;
+layout(rgba16f, binding = 10) uniform image2D RtIndirectCurrent;
+layout(rgba16f, binding = 11) uniform readonly image2D RtIndirectPrevious;
 
 layout(location = 0) in float vertexDistance;
 layout(location = 1) in vec4 vertexColor;
@@ -92,6 +99,8 @@ const int RT_MATERIAL_WATER = 1;
 const int RT_MATERIAL_LEAVES = 2;
 const int RT_MATERIAL_LAVA = 3;
 const int RT_MATERIAL_FIRE = 4;
+const int RT_MATERIAL_REFLECTIVE = 6;
+const int RT_MATERIAL_ENTITY = 7;
 
 uint rtHitBase(uint instanceBase, uint primitiveIndex) {
     return instanceBase + 1u + primitiveIndex * RT_HIT_ATTRIBUTE_STRIDE;
@@ -167,6 +176,8 @@ vec3 rtMaterialDebugColor(int material) {
     if (material == RT_MATERIAL_LEAVES) return vec3(0.08, 0.85, 0.16);
     if (material == RT_MATERIAL_LAVA) return vec3(1.0, 0.18, 0.0);
     if (material == RT_MATERIAL_FIRE) return vec3(1.0, 0.85, 0.05);
+    if (material == RT_MATERIAL_REFLECTIVE) return vec3(0.35, 0.85, 1.0);
+    if (material == RT_MATERIAL_ENTITY) return vec3(0.95, 0.55, 0.15);
     if (material == 5) return vec3(1.0, 0.05, 0.85);
     return material == RT_MATERIAL_OPAQUE ? vec3(0.45) : vec3(1.0, 0.0, 0.0);
 }
@@ -429,18 +440,23 @@ vec3 evaluateDynamicRtLights(
     out uint shadowRayCount
 );
 
-vec3 traceReflection(vec3 origin, vec3 direction, out float normalizedHitDistance) {
+vec3 traceReflection(
+    vec3 origin,
+    vec3 direction,
+    float maximumDistance,
+    out float normalizedHitDistance
+) {
     normalizedHitDistance = -1.0;
     rayQueryEXT query;
     rayQueryInitializeEXT(
         query,
         TopLevelAS,
-        gl_RayFlagsTerminateOnFirstHitEXT,
+        gl_RayFlagsNoneEXT,
         0xFF,
         origin,
         0.03,
         direction,
-        WaterReflectionDistance
+        maximumDistance
     );
 
     while (rayQueryProceedEXT(query)) {
@@ -487,7 +503,6 @@ vec3 traceReflection(vec3 origin, vec3 direction, out float normalizedHitDistanc
     vec2 hitUv = uv0 * (1.0 - barycentrics.x - barycentrics.y)
         + uv1 * barycentrics.x
         + uv2 * barycentrics.y;
-    vec3 hitColor = textureLod(Sampler0, hitUv, 0.0).rgb;
     uint packedNormalMaterial = PackedRtUvs[triangleUvBase + 3u];
     uint packedLights = PackedRtUvs[triangleUvBase + 4u];
     vec2 hitLightLevels = interpolateRtLight(packedLights, barycentrics);
@@ -496,9 +511,15 @@ vec3 traceReflection(vec3 origin, vec3 direction, out float normalizedHitDistanc
         hitNormal = -hitNormal;
     }
     int hitMaterial = unpackRtMaterial(packedNormalMaterial);
+    // Entity proxies do not carry the terrain texture atlas UVs. A stable neutral
+    // albedo is preferable to sampling an arbitrary, occasionally transparent,
+    // terrain-atlas texel and making a mob vanish from the reflection.
+    vec3 hitColor = hitMaterial == RT_MATERIAL_ENTITY
+        ? vec3(0.62, 0.58, 0.52)
+        : textureLod(Sampler0, hitUv, 0.0).rgb;
     float hitEmission = unpackRtEmission(packedNormalMaterial);
     float hitDistance = rayQueryGetIntersectionTEXT(query, true);
-    normalizedHitDistance = hitDistance / max(WaterReflectionDistance, 0.001);
+    normalizedHitDistance = hitDistance / max(maximumDistance, 0.001);
     if (RtDebugView == 8) {
         return vec3(0.0);
     }
@@ -541,11 +562,113 @@ vec3 traceReflection(vec3 origin, vec3 direction, out float normalizedHitDistanc
     vec3 reflectedSurface = hitColor * hitLighting
         + hitColor * hitEmission * rtEmissionBoost(hitMaterial);
     float distanceFade = smoothstep(
-        WaterReflectionDistance * 0.70,
-        WaterReflectionDistance,
+        maximumDistance * 0.70,
+        maximumDistance,
         hitDistance
     );
     return mix(reflectedSurface, reflectionSky(direction), distanceFade);
+}
+
+vec3 traceIndirectLight(vec3 position, vec3 normal) {
+    // A cosine-distributed ray estimates the incoming irradiance for a Lambertian
+    // surface. The hit shader evaluates the hit block's albedo, sun, skylight,
+    // emission and registered dynamic lights, preserving coloured bounces.
+    uint randomState = uint(gl_FragCoord.x) * 0x68BC21EBu
+        ^ uint(gl_FragCoord.y) * 0x02E5BE93u
+        ^ uint(RtFrameIndex) * 0x9E3779B9u;
+    vec3 direction = rtCosineHemisphere(normal, randomState);
+    float ignoredHitDistance;
+    return traceReflection(
+        offsetRayOrigin(position + normal * 0.04, normal),
+        direction,
+        RtIndirectLightDistance,
+        ignoredHitDistance
+    );
+}
+
+vec3 filterPreviousIndirectLight(
+    vec2 pixelPosition,
+    float surfaceDistance,
+    out float totalWeight
+) {
+    ivec2 historySize = imageSize(RtIndirectPrevious);
+    ivec2 basePixel = ivec2(floor(pixelPosition));
+    vec3 weightedLight = vec3(0.0);
+    totalWeight = 0.0;
+    float distanceTolerance = max(0.25, surfaceDistance * 0.006);
+
+    for (int offsetY = -1; offsetY <= 1; offsetY++) {
+        for (int offsetX = -1; offsetX <= 1; offsetX++) {
+            ivec2 samplePixel = clamp(
+                basePixel + ivec2(offsetX, offsetY),
+                ivec2(0),
+                historySize - ivec2(1)
+            );
+            vec4 previous = imageLoad(RtIndirectPrevious, samplePixel);
+            if (previous.a <= 0.0) {
+                continue;
+            }
+            float distanceWeight = max(
+                1.0 - abs(previous.a - surfaceDistance) / distanceTolerance,
+                0.0
+            );
+            vec2 sampleDelta = vec2(samplePixel) + vec2(0.5) - pixelPosition;
+            float spatialWeight = exp(-dot(sampleDelta, sampleDelta) * 0.70);
+            float weight = distanceWeight * spatialWeight;
+            weightedLight += min(previous.rgb, vec3(12.0)) * weight;
+            totalWeight += weight;
+        }
+    }
+    return totalWeight > 0.0001 ? weightedLight / totalWeight : vec3(0.0);
+}
+
+vec3 accumulateIndirectLight(vec3 currentLight, float surfaceDistance) {
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    ivec2 historySize = imageSize(RtIndirectCurrent);
+    if (any(lessThan(pixel, ivec2(0))) || any(greaterThanEqual(pixel, historySize))) {
+        return currentLight;
+    }
+
+    vec3 accumulated = currentLight;
+    bool validReprojection = rtPreviousClipPosition.w > 0.0001;
+    vec2 previousNdc = validReprojection
+        ? rtPreviousClipPosition.xy / rtPreviousClipPosition.w
+        : vec2(2.0);
+    validReprojection = validReprojection
+        && all(lessThanEqual(abs(previousNdc), vec2(1.01)));
+    vec2 previousUv = vec2(
+        previousNdc.x * 0.5 + 0.5,
+        0.5 - previousNdc.y * 0.5
+    );
+    vec2 previousPixelPosition = previousUv * vec2(historySize);
+
+    if (RtTemporalHistoryValid != 0
+            && RtTemporalBlend > 0.0
+            && validReprojection) {
+        float historyWeight;
+        vec3 previousLight = filterPreviousIndirectLight(
+            clamp(previousPixelPosition, vec2(0.5), vec2(historySize) - vec2(0.5)),
+            rtPreviousDistance,
+            historyWeight
+        );
+        if (historyWeight > 0.0001) {
+            // Keep fresh samples influential enough to follow moving lights and
+            // prevent long bright trails from high-energy emissive hits.
+            float blend = min(clamp(RtTemporalBlend, 0.0, 0.96), 0.94);
+            accumulated = mix(currentLight, previousLight, blend);
+        }
+    }
+
+    uint fragmentDepth = floatBitsToUint(clamp(gl_FragCoord.z, 0.0, 1.0));
+    uint previousClosestDepth = imageAtomicMin(RtTemporalDepthOwner, pixel, fragmentDepth);
+    if (fragmentDepth <= previousClosestDepth) {
+        imageStore(
+            RtIndirectCurrent,
+            pixel,
+            vec4(max(accumulated, vec3(0.0)), max(surfaceDistance, 0.0001))
+        );
+    }
+    return accumulated;
 }
 
 float traceSunOcclusion(vec3 origin, vec3 sunDirection, float softness) {
@@ -828,44 +951,49 @@ void main() {
     bool reflectiveWater = translucentLayer
         && primaryMaterial == RT_MATERIAL_WATER
         && WaterReflections != 0;
-    if (RtDebugView == 8 && !reflectiveWater) {
+    bool reflectiveBlock = primaryMaterial == RT_MATERIAL_REFLECTIVE
+        && BlockReflections != 0;
+    bool reflectiveSurface = reflectiveWater || reflectiveBlock;
+    if (RtDebugView == 8 && !reflectiveSurface) {
         fragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
-    if (translucentLayer && !reflectiveWater && !rtOnly && RtDebugView == 0) {
+    if (translucentLayer && !reflectiveSurface && !rtOnly && RtDebugView == 0) {
         fragColor = linear_fog(color, vertexDistance, FogStart, FogEnd, FogColor);
         return;
     }
 
-    if (reflectiveWater
+    if (reflectiveSurface
             && RtDebugView != 6
             && RtDebugView != 9
             && RtDebugView != 10
             && RtDebugView != 11) {
-        vec3 waterNormal = length(worldNormal) > 0.5
+        vec3 surfaceNormal = length(worldNormal) > 0.5
             ? normalize(worldNormal)
             : normalize(cross(dFdx(worldPosition), dFdy(worldPosition)));
         vec3 incident = normalize(cameraIncident);
-        if (dot(waterNormal, incident) > 0.0) {
-            waterNormal = -waterNormal;
+        if (dot(surfaceNormal, incident) > 0.0) {
+            surfaceNormal = -surfaceNormal;
         }
-        vec3 reflectionDirection = normalize(reflect(incident, waterNormal));
-        vec3 reflectionOrigin = offsetRayOrigin(worldPosition + waterNormal * 0.035, waterNormal);
+        vec3 reflectionDirection = normalize(reflect(incident, surfaceNormal));
+        vec3 reflectionOrigin = offsetRayOrigin(worldPosition + surfaceNormal * 0.035, surfaceNormal);
         float normalizedReflectionDistance;
         vec3 reflectedColor = traceReflection(
             reflectionOrigin,
             reflectionDirection,
+            WaterReflectionDistance,
             normalizedReflectionDistance
         );
         if (RtDebugView == 8) {
             fragColor = vec4(rtDistanceDebugColor(normalizedReflectionDistance), 1.0);
             return;
         }
-        float viewCosine = clamp(dot(-incident, waterNormal), 0.0, 1.0);
-        float fresnel = 0.08 + 0.92 * pow(1.0 - viewCosine, 5.0);
+        float viewCosine = clamp(dot(-incident, surfaceNormal), 0.0, 1.0);
+        float fresnelBase = reflectiveWater ? 0.08 : 0.18;
+        float fresnel = fresnelBase + (1.0 - fresnelBase) * pow(1.0 - viewCosine, 5.0);
         float reflectionMix = rtOnly
             ? 1.0
-            : clamp(WaterReflectionStrength * fresnel, 0.0, 1.0);
+            : clamp((reflectiveWater ? WaterReflectionStrength : BlockReflectionStrength) * fresnel, 0.0, 1.0);
         color.rgb = mix(color.rgb, reflectedColor, reflectionMix);
         if (rtOnly) {
             color.a = 1.0;
@@ -960,6 +1088,14 @@ void main() {
                 + tracedSky * skyLevel
                 + directSun
                 + rtBlockColor() * (0.90 * blockLevel * BlockLightStrength);
+        if (RtIndirectLighting != 0 && !twoSidedSurface) {
+            vec3 indirectLight = accumulateIndirectLight(
+                traceIndirectLight(worldPosition, geometricNormal),
+                vertexDistance
+            );
+            lighting += indirectLight
+                * RtIndirectLightStrength;
+        }
         lighting += dynamicLighting;
         vec3 materialTint = rtOnly ? vec3(1.0) : rtVertexColor.rgb;
         vec3 baseColor = texel.rgb * materialTint;

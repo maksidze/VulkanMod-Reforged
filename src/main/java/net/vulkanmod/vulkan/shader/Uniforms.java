@@ -58,6 +58,8 @@ public class Uniforms {
         ));
         vec1i_uniformMap.put("TerrainLayer", () -> VRenderSystem.terrainLayer);
         vec1i_uniformMap.put("WaterReflections", () -> Initializer.CONFIG.rayTracingWaterReflections ? 1 : 0);
+        vec1i_uniformMap.put("BlockReflections", () -> Initializer.CONFIG.rayTracingBlockReflections ? 1 : 0);
+        vec1i_uniformMap.put("RtIndirectLighting", () -> Initializer.CONFIG.rayTracingIndirectLighting ? 1 : 0);
         vec1i_uniformMap.put("RtSkyOcclusion", () -> Initializer.CONFIG.rayTracingSkyOcclusion ? 1 : 0);
         vec1i_uniformMap.put("RtSkyRays", () -> {
             int rays = Initializer.CONFIG.rayTracingSkyRays;
@@ -119,6 +121,19 @@ public class Uniforms {
                 Initializer.CONFIG.rayTracingWaterReflectionDistance,
                 16,
                 512
+        ));
+        vec1f_uniformMap.put("BlockReflectionStrength", () -> Math.max(
+                0.0F,
+                Math.min(1.0F, Initializer.CONFIG.rayTracingBlockReflectionStrength / 100.0F)
+        ));
+        vec1f_uniformMap.put("RtIndirectLightStrength", () -> Math.max(
+                0.0F,
+                Math.min(2.0F, Initializer.CONFIG.rayTracingIndirectLightStrength / 100.0F)
+        ));
+        vec1f_uniformMap.put("RtIndirectLightDistance", () -> unlimitedDistance(
+                Initializer.CONFIG.rayTracingIndirectLightDistance,
+                8,
+                256
         ));
         vec1f_uniformMap.put("RtSkyDistance", () -> unlimitedDistance(
                 Initializer.CONFIG.rayTracingSkyDistance,

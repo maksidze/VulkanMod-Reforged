@@ -25,9 +25,12 @@ import static org.lwjgl.vulkan.VK10.*;
 public final class RtTemporalResources {
     public static final int CURRENT_IMAGE_SLOT = 10;
     public static final int PREVIOUS_IMAGE_SLOT = 11;
+    public static final int INDIRECT_CURRENT_IMAGE_SLOT = 12;
+    public static final int INDIRECT_PREVIOUS_IMAGE_SLOT = 13;
     public static final int DEPTH_OWNER_IMAGE_SLOT = 9;
 
     private static final VulkanImage[] HISTORY_IMAGES = new VulkanImage[2];
+    private static final VulkanImage[] INDIRECT_HISTORY_IMAGES = new VulkanImage[2];
     private static final MappedBuffer CURRENT_MVP = new MappedBuffer(16 * Float.BYTES);
     private static final MappedBuffer PREVIOUS_MVP = new MappedBuffer(16 * Float.BYTES);
     private static final MappedBuffer PREVIOUS_CAMERA_POSITION = new MappedBuffer(3 * Float.BYTES);
@@ -61,6 +64,8 @@ public final class RtTemporalResources {
 
         VTextureSelector.bindTexture(CURRENT_IMAGE_SLOT, getCurrentImage());
         VTextureSelector.bindTexture(PREVIOUS_IMAGE_SLOT, getPreviousImage());
+        VTextureSelector.bindTexture(INDIRECT_CURRENT_IMAGE_SLOT, getCurrentIndirectImage());
+        VTextureSelector.bindTexture(INDIRECT_PREVIOUS_IMAGE_SLOT, getPreviousIndirectImage());
         VTextureSelector.bindTexture(DEPTH_OWNER_IMAGE_SLOT, depthOwnerImage);
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -144,6 +149,14 @@ public final class RtTemporalResources {
 
     public static VulkanImage getPreviousImage() {
         return HISTORY_IMAGES[currentImageIndex ^ 1];
+    }
+
+    public static VulkanImage getCurrentIndirectImage() {
+        return INDIRECT_HISTORY_IMAGES[currentImageIndex];
+    }
+
+    public static VulkanImage getPreviousIndirectImage() {
+        return INDIRECT_HISTORY_IMAGES[currentImageIndex ^ 1];
     }
 
     public static int getHistoryValid() {
@@ -232,6 +245,10 @@ public final class RtTemporalResources {
                 HISTORY_IMAGES[index].free();
                 HISTORY_IMAGES[index] = null;
             }
+            if (INDIRECT_HISTORY_IMAGES[index] != null) {
+                INDIRECT_HISTORY_IMAGES[index].free();
+                INDIRECT_HISTORY_IMAGES[index] = null;
+            }
         }
         if (depthOwnerImage != null) {
             depthOwnerImage.free();
@@ -290,6 +307,41 @@ public final class RtTemporalResources {
                         clearRange
                 );
                 HISTORY_IMAGES[index].transitionImageLayout(
+                        stack,
+                        commandBuffer,
+                        VK_IMAGE_LAYOUT_GENERAL
+                );
+            }
+
+            INDIRECT_HISTORY_IMAGES[index] = VulkanImage.builder(width, height)
+                    .setFormat(VK_FORMAT_R16G16B16A16_SFLOAT)
+                    .setUsage(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+                    .createVulkanImage();
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                INDIRECT_HISTORY_IMAGES[index].transitionImageLayout(
+                        stack,
+                        commandBuffer,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                );
+                VkClearColorValue clearHistory = VkClearColorValue.calloc(stack);
+                clearHistory.float32(0, 0.0F);
+                clearHistory.float32(1, 0.0F);
+                clearHistory.float32(2, 0.0F);
+                clearHistory.float32(3, 0.0F);
+                VkImageSubresourceRange.Buffer clearRange = VkImageSubresourceRange.calloc(1, stack);
+                clearRange.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT);
+                clearRange.baseMipLevel(0);
+                clearRange.levelCount(1);
+                clearRange.baseArrayLayer(0);
+                clearRange.layerCount(1);
+                vkCmdClearColorImage(
+                        commandBuffer,
+                        INDIRECT_HISTORY_IMAGES[index].getId(),
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        clearHistory,
+                        clearRange
+                );
+                INDIRECT_HISTORY_IMAGES[index].transitionImageLayout(
                         stack,
                         commandBuffer,
                         VK_IMAGE_LAYOUT_GENERAL

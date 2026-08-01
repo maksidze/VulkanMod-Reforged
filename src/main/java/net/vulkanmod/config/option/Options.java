@@ -817,6 +817,67 @@ public abstract class Options {
             waterReflectionDistance.updateActiveState();
         });
 
+        SwitchOption blockReflections = new SwitchOption(
+                Component.translatable("vulkanmod.options.rayTracing.blockReflections"),
+                value -> config.rayTracingBlockReflections = value,
+                () -> config.rayTracingBlockReflections
+        );
+        blockReflections
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.blockReflections.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
+        RangeOption blockReflectionStrength = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.blockReflectionStrength"),
+                0, 100, 5,
+                value -> Component.literal(value + "%"),
+                value -> config.rayTracingBlockReflectionStrength = Math.max(0, Math.min(100, value)),
+                () -> Math.max(0, Math.min(100, config.rayTracingBlockReflectionStrength))
+        );
+        blockReflectionStrength
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.blockReflectionStrength.tooltip"))
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && blockReflections.getNewValue());
+
+        blockReflections.setOnChange(blockReflectionStrength::updateActiveState);
+
+        SwitchOption indirectLighting = new SwitchOption(
+                Component.translatable("vulkanmod.options.rayTracing.indirectLighting"),
+                value -> config.rayTracingIndirectLighting = value,
+                () -> config.rayTracingIndirectLighting
+        );
+        indirectLighting
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.indirectLighting.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(DeviceManager::isRayQueryEnabled);
+
+        RangeOption indirectLightStrength = new RangeOption(
+                Component.translatable("vulkanmod.options.rayTracing.indirectLightStrength"),
+                0, 200, 5,
+                value -> Component.literal(value + "%"),
+                value -> config.rayTracingIndirectLightStrength = Math.max(0, Math.min(200, value)),
+                () -> Math.max(0, Math.min(200, config.rayTracingIndirectLightStrength))
+        );
+        indirectLightStrength
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.indirectLightStrength.tooltip"))
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && indirectLighting.getNewValue());
+
+        CyclingOption<Integer> indirectLightDistance = new CyclingOption<>(
+                Component.translatable("vulkanmod.options.rayTracing.indirectLightDistance"),
+                new Integer[]{8, 16, 32, 48, 64, 128, 256, 0},
+                value -> config.rayTracingIndirectLightDistance = sanitizeUnlimitedDistance(value, 8, 256),
+                () -> sanitizeUnlimitedDistance(config.rayTracingIndirectLightDistance, 8, 256)
+        );
+        indirectLightDistance
+                .setTranslator(Options::translateUnlimitedDistance)
+                .setTooltip(Component.translatable("vulkanmod.options.rayTracing.indirectLightDistance.tooltip"))
+                .setImpact(PerformanceImpact.HIGH)
+                .setActivationFn(() -> DeviceManager.isRayQueryEnabled() && indirectLighting.getNewValue());
+
+        indirectLighting.setOnChange(() -> {
+            indirectLightStrength.updateActiveState();
+            indirectLightDistance.updateActiveState();
+        });
+
         return new OptionBlock[]{
                 new OptionBlock("", new Option<?>[]{
                         viewMode,
@@ -845,7 +906,12 @@ public abstract class Options {
                         dynamicLightStrength,
                         waterReflections,
                         waterReflectionStrength,
-                        waterReflectionDistance
+                        waterReflectionDistance,
+                        blockReflections,
+                        blockReflectionStrength,
+                        indirectLighting,
+                        indirectLightStrength,
+                        indirectLightDistance
                 })
         };
     }

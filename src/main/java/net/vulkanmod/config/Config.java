@@ -55,6 +55,13 @@ public class Config {
     public boolean rayTracingWaterReflections = true;
     public int rayTracingWaterReflectionStrength = 70;
     public int rayTracingWaterReflectionDistance = 128;
+    public boolean rayTracingBlockReflections = true;
+    public int rayTracingBlockReflectionStrength = 35;
+    // One sample per pixel is deliberately opt-in until colour-history denoising
+    // is available. It is useful for experiments but can be visibly grainy.
+    public boolean rayTracingIndirectLighting = false;
+    public int rayTracingIndirectLightStrength = 35;
+    public int rayTracingIndirectLightDistance = 48;
     public boolean rayTracingSkyOcclusion = true;
     public int rayTracingSkyRays = 1;
     public int rayTracingSkyDistance = 64;

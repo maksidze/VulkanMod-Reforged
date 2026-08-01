@@ -11,7 +11,7 @@ import net.vulkanmod.vulkan.shader.descriptor.ImageDescriptor;
 import java.nio.ByteBuffer;
 
 public abstract class VTextureSelector {
-    public static final int SIZE = 12;
+    public static final int SIZE = 14;
 
     private static final VulkanImage[] boundTextures = new VulkanImage[SIZE];
 
